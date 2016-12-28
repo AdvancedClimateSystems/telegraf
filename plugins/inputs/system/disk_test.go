@@ -15,7 +15,7 @@ func TestDiskStats(t *testing.T) {
 	var acc testutil.Accumulator
 	var err error
 
-	duAll := []*disk.DiskUsageStat{
+	duAll := []*disk.UsageStat{
 		{
 			Path:        "/",
 			Fstype:      "ext4",
@@ -37,7 +37,7 @@ func TestDiskStats(t *testing.T) {
 			InodesUsed:  2000,
 		},
 	}
-	duFiltered := []*disk.DiskUsageStat{
+	duFiltered := []*disk.UsageStat{
 		{
 			Path:        "/",
 			Fstype:      "ext4",
@@ -50,9 +50,33 @@ func TestDiskStats(t *testing.T) {
 		},
 	}
 
-	mps.On("DiskUsage", []string(nil), []string(nil)).Return(duAll, nil)
-	mps.On("DiskUsage", []string{"/", "/dev"}, []string(nil)).Return(duFiltered, nil)
-	mps.On("DiskUsage", []string{"/", "/home"}, []string(nil)).Return(duAll, nil)
+	psAll := []*disk.PartitionStat{
+		{
+			Device:     "/dev/sda",
+			Mountpoint: "/",
+			Fstype:     "ext4",
+			Opts:       "",
+		},
+		{
+			Device:     "/dev/sdb",
+			Mountpoint: "/home",
+			Fstype:     "ext4",
+			Opts:       "",
+		},
+	}
+
+	psFiltered := []*disk.PartitionStat{
+		{
+			Device:     "/dev/sda",
+			Mountpoint: "/",
+			Fstype:     "ext4",
+			Opts:       "",
+		},
+	}
+
+	mps.On("DiskUsage", []string(nil), []string(nil)).Return(duAll, psAll, nil)
+	mps.On("DiskUsage", []string{"/", "/dev"}, []string(nil)).Return(duFiltered, psFiltered, nil)
+	mps.On("DiskUsage", []string{"/", "/home"}, []string(nil)).Return(duAll, psAll, nil)
 
 	err = (&DiskStats{ps: &mps}).Gather(&acc)
 	require.NoError(t, err)
@@ -64,10 +88,12 @@ func TestDiskStats(t *testing.T) {
 	tags1 := map[string]string{
 		"path":   "/",
 		"fstype": "ext4",
+		"device": "sda",
 	}
 	tags2 := map[string]string{
 		"path":   "/home",
 		"fstype": "ext4",
+		"device": "sdb",
 	}
 
 	fields1 := map[string]interface{}{
@@ -108,7 +134,7 @@ func TestDiskStats(t *testing.T) {
 // 	var acc testutil.Accumulator
 // 	var err error
 
-// 	diskio1 := disk.DiskIOCountersStat{
+// 	diskio1 := disk.IOCountersStat{
 // 		ReadCount:    888,
 // 		WriteCount:   5341,
 // 		ReadBytes:    100000,
@@ -119,7 +145,7 @@ func TestDiskStats(t *testing.T) {
 // 		IoTime:       123552,
 // 		SerialNumber: "ab-123-ad",
 // 	}
-// 	diskio2 := disk.DiskIOCountersStat{
+// 	diskio2 := disk.IOCountersStat{
 // 		ReadCount:    444,
 // 		WriteCount:   2341,
 // 		ReadBytes:    200000,
@@ -132,7 +158,7 @@ func TestDiskStats(t *testing.T) {
 // 	}
 
 // 	mps.On("DiskIO").Return(
-// 		map[string]disk.DiskIOCountersStat{"sda1": diskio1, "sdb1": diskio2},
+// 		map[string]disk.IOCountersStat{"sda1": diskio1, "sdb1": diskio2},
 // 		nil)
 
 // 	err = (&DiskIOStats{ps: &mps}).Gather(&acc)

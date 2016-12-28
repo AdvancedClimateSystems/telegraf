@@ -18,16 +18,16 @@ import (
 
 type InfluxDB struct {
 	// URL is only for backwards compatability
-	URL             string
-	URLs            []string `toml:"urls"`
-	Username        string
-	Password        string
-	Database        string
-	UserAgent       string
-	Precision       string
-	RetentionPolicy string
-	Timeout         internal.Duration
-	UDPPayload      int `toml:"udp_payload"`
+	URL              string
+	URLs             []string `toml:"urls"`
+	Username         string
+	Password         string
+	Database         string
+	UserAgent        string
+	RetentionPolicy  string
+	WriteConsistency string
+	Timeout          internal.Duration
+	UDPPayload       int `toml:"udp_payload"`
 
 	// Path to CA file
 	SSLCA string `toml:"ssl_ca"`
@@ -37,6 +37,9 @@ type InfluxDB struct {
 	SSLKey string `toml:"ssl_key"`
 	// Use SSL but skip chain & host verification
 	InsecureSkipVerify bool
+
+	// Precision is only here for legacy support. It will be ignored.
+	Precision string
 
 	conns []client.Client
 }
@@ -49,11 +52,11 @@ var sampleConfig = `
   urls = ["http://localhost:8086"] # required
   ## The target database for metrics (telegraf will create it if not exists).
   database = "telegraf" # required
-  ## Retention policy to write to.
-  retention_policy = "default"
-  ## Precision of writes, valid values are "ns", "us" (or "µs"), "ms", "s", "m", "h".
-  ## note: using "s" precision greatly improves InfluxDB compression.
-  precision = "s"
+
+  ## Retention policy to write to. Empty string writes to the default rp.
+  retention_policy = ""
+  ## Write consistency (clusters only), can be: "any", "one", "quorum", "all"
+  write_consistency = "any"
 
   ## Write timeout (for the InfluxDB client), formatted as a string.
   ## If not provided, will default to 5s. 0s means no timeout (not recommended).
@@ -125,13 +128,9 @@ func (i *InfluxDB) Connect() error {
 				return err
 			}
 
-			// Create Database if it doesn't exist
-			_, e := c.Query(client.Query{
-				Command: fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", i.Database),
-			})
-
-			if e != nil {
-				log.Println("Database creation failed: " + e.Error())
+			err = createDatabase(c, i.Database)
+			if err != nil {
+				log.Println("E! Database creation failed: " + err.Error())
 				continue
 			}
 
@@ -144,8 +143,24 @@ func (i *InfluxDB) Connect() error {
 	return nil
 }
 
+func createDatabase(c client.Client, database string) error {
+	// Create Database if it doesn't exist
+	_, err := c.Query(client.Query{
+		Command: fmt.Sprintf("CREATE DATABASE \"%s\"", database),
+	})
+	return err
+}
+
 func (i *InfluxDB) Close() error {
-	// InfluxDB client does not provide a Close() function
+	var errS string
+	for j, _ := range i.conns {
+		if err := i.conns[j].Close(); err != nil {
+			errS += err.Error()
+		}
+	}
+	if errS != "" {
+		return fmt.Errorf("output influxdb close failed: %s", errS)
+	}
 	return nil
 }
 
@@ -167,9 +182,9 @@ func (i *InfluxDB) Write(metrics []telegraf.Metric) error {
 		}
 	}
 	bp, err := client.NewBatchPoints(client.BatchPointsConfig{
-		Database:        i.Database,
-		Precision:       i.Precision,
-		RetentionPolicy: i.RetentionPolicy,
+		Database:         i.Database,
+		RetentionPolicy:  i.RetentionPolicy,
+		WriteConsistency: i.WriteConsistency,
 	})
 	if err != nil {
 		return err
@@ -185,12 +200,21 @@ func (i *InfluxDB) Write(metrics []telegraf.Metric) error {
 	p := rand.Perm(len(i.conns))
 	for _, n := range p {
 		if e := i.conns[n].Write(bp); e != nil {
-			log.Println("ERROR: " + e.Error())
+			// Log write failure
+			log.Printf("E! InfluxDB Output Error: %s", e)
+			// If the database was not found, try to recreate it
+			if strings.Contains(e.Error(), "database not found") {
+				if errc := createDatabase(i.conns[n], i.Database); errc != nil {
+					log.Printf("E! Error: Database %s not found and failed to recreate\n",
+						i.Database)
+				}
+			}
 		} else {
 			err = nil
 			break
 		}
 	}
+
 	return err
 }
 

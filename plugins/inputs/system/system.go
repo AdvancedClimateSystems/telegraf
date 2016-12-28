@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"runtime"
 
 	"github.com/shirou/gopsutil/host"
 	"github.com/shirou/gopsutil/load"
@@ -21,24 +22,32 @@ func (_ *SystemStats) Description() string {
 func (_ *SystemStats) SampleConfig() string { return "" }
 
 func (_ *SystemStats) Gather(acc telegraf.Accumulator) error {
-	loadavg, err := load.LoadAvg()
+	loadavg, err := load.Avg()
 	if err != nil {
 		return err
 	}
 
-	hostinfo, err := host.HostInfo()
+	hostinfo, err := host.Info()
 	if err != nil {
 		return err
 	}
 
-	fields := map[string]interface{}{
-		"load1":         loadavg.Load1,
-		"load5":         loadavg.Load5,
-		"load15":        loadavg.Load15,
+	users, err := host.Users()
+	if err != nil {
+		return err
+	}
+
+	acc.AddGauge("system", map[string]interface{}{
+		"load1":   loadavg.Load1,
+		"load5":   loadavg.Load5,
+		"load15":  loadavg.Load15,
+		"n_users": len(users),
+		"n_cpus":  runtime.NumCPU(),
+	}, nil)
+	acc.AddCounter("system", map[string]interface{}{
 		"uptime":        hostinfo.Uptime,
 		"uptime_format": format_uptime(hostinfo.Uptime),
-	}
-	acc.AddFields("system", fields, nil)
+	}, nil)
 
 	return nil
 }

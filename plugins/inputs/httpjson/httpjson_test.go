@@ -125,7 +125,7 @@ type mockHTTPClient struct {
 // Mock implementation of MakeRequest. Usually returns an http.Response with
 // hard-coded responseBody and statusCode. However, if the request uses a
 // nonstandard method, it uses status code 405 (method not allowed)
-func (c mockHTTPClient) MakeRequest(req *http.Request) (*http.Response, error) {
+func (c *mockHTTPClient) MakeRequest(req *http.Request) (*http.Response, error) {
 	resp := http.Response{}
 	resp.StatusCode = c.statusCode
 
@@ -147,10 +147,10 @@ func (c mockHTTPClient) MakeRequest(req *http.Request) (*http.Response, error) {
 	return &resp, nil
 }
 
-func (c mockHTTPClient) SetHTTPClient(_ *http.Client) {
+func (c *mockHTTPClient) SetHTTPClient(_ *http.Client) {
 }
 
-func (c mockHTTPClient) HTTPClient() *http.Client {
+func (c *mockHTTPClient) HTTPClient() *http.Client {
 	return nil
 }
 
@@ -164,7 +164,7 @@ func (c mockHTTPClient) HTTPClient() *http.Client {
 func genMockHttpJson(response string, statusCode int) []*HttpJson {
 	return []*HttpJson{
 		&HttpJson{
-			client: mockHTTPClient{responseBody: response, statusCode: statusCode},
+			client: &mockHTTPClient{responseBody: response, statusCode: statusCode},
 			Servers: []string{
 				"http://server1.example.com/metrics/",
 				"http://server2.example.com/metrics/",
@@ -181,7 +181,7 @@ func genMockHttpJson(response string, statusCode int) []*HttpJson {
 			},
 		},
 		&HttpJson{
-			client: mockHTTPClient{responseBody: response, statusCode: statusCode},
+			client: &mockHTTPClient{responseBody: response, statusCode: statusCode},
 			Servers: []string{
 				"http://server3.example.com/metrics/",
 				"http://server4.example.com/metrics/",
@@ -241,7 +241,7 @@ func TestHttpJsonGET_URL(t *testing.T) {
 		Servers: []string{ts.URL + "?api_key=mykey"},
 		Name:    "",
 		Method:  "GET",
-		client:  RealHTTPClient{client: &http.Client{}},
+		client:  &RealHTTPClient{client: &http.Client{}},
 	}
 
 	var acc testutil.Accumulator
@@ -314,7 +314,7 @@ func TestHttpJsonGET(t *testing.T) {
 		Name:       "",
 		Method:     "GET",
 		Parameters: params,
-		client:     RealHTTPClient{client: &http.Client{}},
+		client:     &RealHTTPClient{client: &http.Client{}},
 	}
 
 	var acc testutil.Accumulator
@@ -388,7 +388,7 @@ func TestHttpJsonPOST(t *testing.T) {
 		Name:       "",
 		Method:     "POST",
 		Parameters: params,
-		client:     RealHTTPClient{client: &http.Client{}},
+		client:     &RealHTTPClient{client: &http.Client{}},
 	}
 
 	var acc testutil.Accumulator
@@ -507,6 +507,55 @@ func TestHttpJson200Tags(t *testing.T) {
 				fields := map[string]interface{}{"value": float64(15), "response_time": float64(1)}
 				mname := "httpjson_" + service.Name
 				acc.AssertContainsTaggedFields(t, mname, fields, tags)
+			}
+		}
+	}
+}
+
+const validJSONArrayTags = `
+[
+	{
+		"value": 15,
+		"role": "master",
+		"build": "123"
+	},
+	{
+		"value": 17,
+		"role": "slave",
+		"build": "456"
+	}
+]`
+
+// Test that array data is collected correctly
+func TestHttpJsonArray200Tags(t *testing.T) {
+	httpjson := genMockHttpJson(validJSONArrayTags, 200)
+
+	for _, service := range httpjson {
+		if service.Name == "other_webapp" {
+			var acc testutil.Accumulator
+			err := service.Gather(&acc)
+			// Set responsetime
+			for _, p := range acc.Metrics {
+				p.Fields["response_time"] = 1.0
+			}
+			require.NoError(t, err)
+			assert.Equal(t, 8, acc.NFields())
+			assert.Equal(t, uint64(4), acc.NMetrics())
+
+			for _, m := range acc.Metrics {
+				if m.Tags["role"] == "master" {
+					assert.Equal(t, "123", m.Tags["build"])
+					assert.Equal(t, float64(15), m.Fields["value"])
+					assert.Equal(t, float64(1), m.Fields["response_time"])
+					assert.Equal(t, "httpjson_"+service.Name, m.Measurement)
+				} else if m.Tags["role"] == "slave" {
+					assert.Equal(t, "456", m.Tags["build"])
+					assert.Equal(t, float64(17), m.Fields["value"])
+					assert.Equal(t, float64(1), m.Fields["response_time"])
+					assert.Equal(t, "httpjson_"+service.Name, m.Measurement)
+				} else {
+					assert.FailNow(t, "unknown metric")
+				}
 			}
 		}
 	}

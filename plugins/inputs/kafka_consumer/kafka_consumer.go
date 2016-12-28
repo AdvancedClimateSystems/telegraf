@@ -14,10 +14,11 @@ import (
 )
 
 type Kafka struct {
-	ConsumerGroup  string
-	Topics         []string
-	ZookeeperPeers []string
-	Consumer       *consumergroup.ConsumerGroup
+	ConsumerGroup   string
+	Topics          []string
+	ZookeeperPeers  []string
+	ZookeeperChroot string
+	Consumer        *consumergroup.ConsumerGroup
 
 	// Legacy metric buffer support
 	MetricBuffer int
@@ -48,12 +49,14 @@ var sampleConfig = `
   topics = ["telegraf"]
   ## an array of Zookeeper connection strings
   zookeeper_peers = ["localhost:2181"]
+  ## Zookeeper Chroot
+  zookeeper_chroot = ""
   ## the name of the consumer group
   consumer_group = "telegraf_metrics_consumers"
   ## Offset (must be either "oldest" or "newest")
   offset = "oldest"
 
-  ## Data format to consume. This can be "json", "influx" or "graphite"
+  ## Data format to consume.
   ## Each data format has it's own unique set of configuration options, read
   ## more about them here:
   ## https://github.com/influxdata/telegraf/blob/master/docs/DATA_FORMATS_INPUT.md
@@ -80,13 +83,14 @@ func (k *Kafka) Start(acc telegraf.Accumulator) error {
 	k.acc = acc
 
 	config := consumergroup.NewConfig()
+	config.Zookeeper.Chroot = k.ZookeeperChroot
 	switch strings.ToLower(k.Offset) {
 	case "oldest", "":
 		config.Offsets.Initial = sarama.OffsetOldest
 	case "newest":
 		config.Offsets.Initial = sarama.OffsetNewest
 	default:
-		log.Printf("WARNING: Kafka consumer invalid offset '%s', using 'oldest'\n",
+		log.Printf("I! WARNING: Kafka consumer invalid offset '%s', using 'oldest'\n",
 			k.Offset)
 		config.Offsets.Initial = sarama.OffsetOldest
 	}
@@ -111,7 +115,7 @@ func (k *Kafka) Start(acc telegraf.Accumulator) error {
 
 	// Start the kafka message reader
 	go k.receiver()
-	log.Printf("Started the kafka consumer service, peers: %v, topics: %v\n",
+	log.Printf("I! Started the kafka consumer service, peers: %v, topics: %v\n",
 		k.ZookeeperPeers, k.Topics)
 	return nil
 }
@@ -124,11 +128,13 @@ func (k *Kafka) receiver() {
 		case <-k.done:
 			return
 		case err := <-k.errs:
-			log.Printf("Kafka Consumer Error: %s\n", err.Error())
+			if err != nil {
+				log.Printf("E! Kafka Consumer Error: %s\n", err)
+			}
 		case msg := <-k.in:
 			metrics, err := k.parser.Parse(msg.Value)
 			if err != nil {
-				log.Printf("KAFKA PARSE ERROR\nmessage: %s\nerror: %s",
+				log.Printf("E! Kafka Message Parse Error\nmessage: %s\nerror: %s",
 					string(msg.Value), err.Error())
 			}
 
@@ -152,7 +158,7 @@ func (k *Kafka) Stop() {
 	defer k.Unlock()
 	close(k.done)
 	if err := k.Consumer.Close(); err != nil {
-		log.Printf("Error closing kafka consumer: %s\n", err.Error())
+		log.Printf("E! Error closing kafka consumer: %s\n", err.Error())
 	}
 }
 

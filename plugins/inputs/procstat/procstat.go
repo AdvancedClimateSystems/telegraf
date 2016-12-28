@@ -15,18 +15,24 @@ import (
 )
 
 type Procstat struct {
-	PidFile string `toml:"pid_file"`
-	Exe     string
-	Pattern string
-	Prefix  string
-	User    string
+	PidFile     string `toml:"pid_file"`
+	Exe         string
+	Pattern     string
+	Prefix      string
+	ProcessName string
+	User        string
+	PidTag      bool
 
+	// pidmap maps a pid to a process object, so we don't recreate every gather
 	pidmap map[int32]*process.Process
+	// tagmap maps a pid to a map of tags for that pid
+	tagmap map[int32]map[string]string
 }
 
 func NewProcstat() *Procstat {
 	return &Procstat{
 		pidmap: make(map[int32]*process.Process),
+		tagmap: make(map[int32]map[string]string),
 	}
 }
 
@@ -41,8 +47,15 @@ var sampleConfig = `
   ## user as argument for pgrep (ie, pgrep -u <user>)
   # user = "nginx"
 
+  ## override for process_name
+  ## This is optional; default is sourced from /proc/<pid>/status
+  # process_name = "bar"
   ## Field name prefix
   prefix = ""
+  ## comment this out if you want raw cpu_time stats
+  fielddrop = ["cpu_time_*"]
+  ## This is optional; moves pid into a tag instead of a field
+  pid_tag = false
 `
 
 func (_ *Procstat) SampleConfig() string {
@@ -56,11 +69,14 @@ func (_ *Procstat) Description() string {
 func (p *Procstat) Gather(acc telegraf.Accumulator) error {
 	err := p.createProcesses()
 	if err != nil {
-		log.Printf("Error: procstat getting process, exe: [%s]	pidfile: [%s] pattern: [%s] user: [%s] %s",
+		log.Printf("E! Error: procstat getting process, exe: [%s] pidfile: [%s] pattern: [%s] user: [%s] %s",
 			p.Exe, p.PidFile, p.Pattern, p.User, err.Error())
 	} else {
-		for _, proc := range p.pidmap {
-			p := NewSpecProcessor(p.Prefix, acc, proc)
+		for pid, proc := range p.pidmap {
+			if p.PidTag {
+				p.tagmap[pid]["pid"] = fmt.Sprint(pid)
+			}
+			p := NewSpecProcessor(p.ProcessName, p.Prefix, pid, acc, proc, p.tagmap[pid])
 			p.pushMetrics()
 		}
 	}
@@ -101,45 +117,49 @@ func (p *Procstat) getAllPids() ([]int32, error) {
 	var err error
 
 	if p.PidFile != "" {
-		pids, err = pidsFromFile(p.PidFile)
+		pids, err = p.pidsFromFile()
 	} else if p.Exe != "" {
-		pids, err = pidsFromExe(p.Exe)
+		pids, err = p.pidsFromExe()
 	} else if p.Pattern != "" {
-		pids, err = pidsFromPattern(p.Pattern)
+		pids, err = p.pidsFromPattern()
 	} else if p.User != "" {
-		pids, err = pidsFromUser(p.User)
+		pids, err = p.pidsFromUser()
 	} else {
-		err = fmt.Errorf("Either exe, pid_file or pattern has to be specified")
+		err = fmt.Errorf("Either exe, pid_file, user, or pattern has to be specified")
 	}
 
 	return pids, err
 }
 
-func pidsFromFile(file string) ([]int32, error) {
+func (p *Procstat) pidsFromFile() ([]int32, error) {
 	var out []int32
 	var outerr error
-	pidString, err := ioutil.ReadFile(file)
+	pidString, err := ioutil.ReadFile(p.PidFile)
 	if err != nil {
-		outerr = fmt.Errorf("Failed to read pidfile '%s'. Error: '%s'", file, err)
+		outerr = fmt.Errorf("Failed to read pidfile '%s'. Error: '%s'",
+			p.PidFile, err)
 	} else {
 		pid, err := strconv.Atoi(strings.TrimSpace(string(pidString)))
 		if err != nil {
 			outerr = err
 		} else {
 			out = append(out, int32(pid))
+			p.tagmap[int32(pid)] = map[string]string{
+				"pidfile": p.PidFile,
+			}
 		}
 	}
 	return out, outerr
 }
 
-func pidsFromExe(exe string) ([]int32, error) {
+func (p *Procstat) pidsFromExe() ([]int32, error) {
 	var out []int32
 	var outerr error
 	bin, err := exec.LookPath("pgrep")
 	if err != nil {
 		return out, fmt.Errorf("Couldn't find pgrep binary: %s", err)
 	}
-	pgrep, err := exec.Command(bin, exe).Output()
+	pgrep, err := exec.Command(bin, p.Exe).Output()
 	if err != nil {
 		return out, fmt.Errorf("Failed to execute %s. Error: '%s'", bin, err)
 	} else {
@@ -148,6 +168,9 @@ func pidsFromExe(exe string) ([]int32, error) {
 			ipid, err := strconv.Atoi(pid)
 			if err == nil {
 				out = append(out, int32(ipid))
+				p.tagmap[int32(ipid)] = map[string]string{
+					"exe": p.Exe,
+				}
 			} else {
 				outerr = err
 			}
@@ -156,14 +179,14 @@ func pidsFromExe(exe string) ([]int32, error) {
 	return out, outerr
 }
 
-func pidsFromPattern(pattern string) ([]int32, error) {
+func (p *Procstat) pidsFromPattern() ([]int32, error) {
 	var out []int32
 	var outerr error
 	bin, err := exec.LookPath("pgrep")
 	if err != nil {
 		return out, fmt.Errorf("Couldn't find pgrep binary: %s", err)
 	}
-	pgrep, err := exec.Command(bin, "-f", pattern).Output()
+	pgrep, err := exec.Command(bin, "-f", p.Pattern).Output()
 	if err != nil {
 		return out, fmt.Errorf("Failed to execute %s. Error: '%s'", bin, err)
 	} else {
@@ -172,6 +195,9 @@ func pidsFromPattern(pattern string) ([]int32, error) {
 			ipid, err := strconv.Atoi(pid)
 			if err == nil {
 				out = append(out, int32(ipid))
+				p.tagmap[int32(ipid)] = map[string]string{
+					"pattern": p.Pattern,
+				}
 			} else {
 				outerr = err
 			}
@@ -180,14 +206,14 @@ func pidsFromPattern(pattern string) ([]int32, error) {
 	return out, outerr
 }
 
-func pidsFromUser(user string) ([]int32, error) {
+func (p *Procstat) pidsFromUser() ([]int32, error) {
 	var out []int32
 	var outerr error
 	bin, err := exec.LookPath("pgrep")
 	if err != nil {
 		return out, fmt.Errorf("Couldn't find pgrep binary: %s", err)
 	}
-	pgrep, err := exec.Command(bin, "-u", user).Output()
+	pgrep, err := exec.Command(bin, "-u", p.User).Output()
 	if err != nil {
 		return out, fmt.Errorf("Failed to execute %s. Error: '%s'", bin, err)
 	} else {
@@ -196,6 +222,9 @@ func pidsFromUser(user string) ([]int32, error) {
 			ipid, err := strconv.Atoi(pid)
 			if err == nil {
 				out = append(out, int32(ipid))
+				p.tagmap[int32(ipid)] = map[string]string{
+					"user": p.User,
+				}
 			} else {
 				outerr = err
 			}

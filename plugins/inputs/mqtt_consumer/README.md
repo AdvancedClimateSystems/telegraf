@@ -21,8 +21,12 @@ The plugin expects messages in the
     "sensors/#",
   ]
 
-  ## Maximum number of metrics to buffer between collection intervals
-  metric_buffer = 100000
+  # if true, messages that can't be delivered while the subscriber is offline
+  # will be delivered when it comes back (such as on service restart).
+  # NOTE: if true, client_id MUST be set
+  persistent_session = false
+  # If empty, a random client ID will be generated.
+  client_id = ""
 
   ## username and password to connect MQTT server.
   # username = "telegraf"
@@ -35,7 +39,7 @@ The plugin expects messages in the
   ## Use SSL but skip chain & host verification
   # insecure_skip_verify = false
 
-  ## Data format to consume. This can be "json", "influx" or "graphite"
+  ## Data format to consume.
   ## Each data format has it's own unique set of configuration options, read
   ## more about them here:
   ## https://github.com/influxdata/telegraf/blob/master/docs/DATA_FORMATS_INPUT.md

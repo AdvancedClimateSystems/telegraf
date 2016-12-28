@@ -8,28 +8,47 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/credentials/ec2rolecreds"
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
 
 	"github.com/influxdata/telegraf"
+	internalaws "github.com/influxdata/telegraf/internal/config/aws"
 	"github.com/influxdata/telegraf/plugins/outputs"
 )
 
 type CloudWatch struct {
-	Region    string // AWS Region
-	Namespace string // CloudWatch Metrics Namespace
+	Region    string `toml:"region"`
+	AccessKey string `toml:"access_key"`
+	SecretKey string `toml:"secret_key"`
+	RoleARN   string `toml:"role_arn"`
+	Profile   string `toml:"profile"`
+	Filename  string `toml:"shared_credential_file"`
+	Token     string `toml:"token"`
+
+	Namespace string `toml:"namespace"` // CloudWatch Metrics Namespace
 	svc       *cloudwatch.CloudWatch
 }
 
 var sampleConfig = `
   ## Amazon REGION
-  region = 'us-east-1'
+  region = "us-east-1"
+
+  ## Amazon Credentials
+  ## Credentials are loaded in the following order
+  ## 1) Assumed credentials via STS if role_arn is specified
+  ## 2) explicit credentials from 'access_key' and 'secret_key'
+  ## 3) shared profile from 'profile'
+  ## 4) environment variables
+  ## 5) shared credentials file
+  ## 6) EC2 Instance Profile
+  #access_key = ""
+  #secret_key = ""
+  #token = ""
+  #role_arn = ""
+  #profile = ""
+  #shared_credential_file = ""
 
   ## Namespace for the CloudWatch MetricDatums
-  namespace = 'InfluxData/Telegraf'
+  namespace = "InfluxData/Telegraf"
 `
 
 func (c *CloudWatch) SampleConfig() string {
@@ -41,17 +60,18 @@ func (c *CloudWatch) Description() string {
 }
 
 func (c *CloudWatch) Connect() error {
-	Config := &aws.Config{
-		Region: aws.String(c.Region),
-		Credentials: credentials.NewChainCredentials(
-			[]credentials.Provider{
-				&ec2rolecreds.EC2RoleProvider{Client: ec2metadata.New(session.New())},
-				&credentials.EnvProvider{},
-				&credentials.SharedCredentialsProvider{},
-			}),
+	credentialConfig := &internalaws.CredentialConfig{
+		Region:    c.Region,
+		AccessKey: c.AccessKey,
+		SecretKey: c.SecretKey,
+		RoleARN:   c.RoleARN,
+		Profile:   c.Profile,
+		Filename:  c.Filename,
+		Token:     c.Token,
 	}
+	configProvider := credentialConfig.Credentials()
 
-	svc := cloudwatch.New(session.New(Config))
+	svc := cloudwatch.New(configProvider)
 
 	params := &cloudwatch.ListMetricsInput{
 		Namespace: aws.String(c.Namespace),
@@ -60,7 +80,7 @@ func (c *CloudWatch) Connect() error {
 	_, err := svc.ListMetrics(params) // Try a read-only call to test connection.
 
 	if err != nil {
-		log.Printf("cloudwatch: Error in ListMetrics API call : %+v \n", err.Error())
+		log.Printf("E! cloudwatch: Error in ListMetrics API call : %+v \n", err.Error())
 	}
 
 	c.svc = svc
@@ -111,7 +131,7 @@ func (c *CloudWatch) WriteToCloudWatch(datums []*cloudwatch.MetricDatum) error {
 	_, err := c.svc.PutMetricData(params)
 
 	if err != nil {
-		log.Printf("CloudWatch: Unable to write to CloudWatch : %+v \n", err.Error())
+		log.Printf("E! CloudWatch: Unable to write to CloudWatch : %+v \n", err.Error())
 	}
 
 	return err

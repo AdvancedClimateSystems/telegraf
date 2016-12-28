@@ -9,14 +9,15 @@ import (
 	"time"
 
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/internal"
 	"github.com/influxdata/telegraf/plugins/inputs"
 )
 
 // NetResponses struct
 type NetResponse struct {
 	Address     string
-	Timeout     float64
-	ReadTimeout float64
+	Timeout     internal.Duration
+	ReadTimeout internal.Duration
 	Send        string
 	Expect      string
 	Protocol    string
@@ -28,16 +29,23 @@ func (_ *NetResponse) Description() string {
 
 var sampleConfig = `
   ## Protocol, must be "tcp" or "udp"
+  ## NOTE: because the "udp" protocol does not respond to requests, it requires
+  ## a send/expect string pair (see below).
   protocol = "tcp"
   ## Server address (default localhost)
-  address = "github.com:80"
-  ## Set timeout (default 1.0 seconds)
-  timeout = 1.0
-  ## Set read timeout (default 1.0 seconds)
-  read_timeout = 1.0
-  ## Optional string sent to the server
+  address = "localhost:80"
+  ## Set timeout
+  timeout = "1s"
+
+  ## Set read timeout (only used if expecting a response)
+  read_timeout = "1s"
+
+  ## The following options are required for UDP checks. For TCP, they are
+  ## optional. The plugin will send the given string to the server and then
+  ## expect to receive the given 'expect' string back.
+  ## string sent to the server
   # send = "ssh"
-  ## Optional expected string in answer
+  ## expected string in answer
   # expect = "ssh"
 `
 
@@ -45,15 +53,13 @@ func (_ *NetResponse) SampleConfig() string {
 	return sampleConfig
 }
 
-func (t *NetResponse) TcpGather() (map[string]interface{}, error) {
+func (n *NetResponse) TcpGather() (map[string]interface{}, error) {
 	// Prepare fields
 	fields := make(map[string]interface{})
 	// Start Timer
 	start := time.Now()
-	// Resolving
-	tcpAddr, err := net.ResolveTCPAddr("tcp", t.Address)
 	// Connecting
-	conn, err := net.DialTCP("tcp", nil, tcpAddr)
+	conn, err := net.DialTimeout("tcp", n.Address, n.Timeout.Duration)
 	// Stop timer
 	responseTime := time.Since(start).Seconds()
 	// Handle error
@@ -62,17 +68,16 @@ func (t *NetResponse) TcpGather() (map[string]interface{}, error) {
 	}
 	defer conn.Close()
 	// Send string if needed
-	if t.Send != "" {
-		msg := []byte(t.Send)
+	if n.Send != "" {
+		msg := []byte(n.Send)
 		conn.Write(msg)
-		conn.CloseWrite()
 		// Stop timer
 		responseTime = time.Since(start).Seconds()
 	}
 	// Read string if needed
-	if t.Expect != "" {
+	if n.Expect != "" {
 		// Set read timeout
-		conn.SetReadDeadline(time.Now().Add(time.Duration(t.ReadTimeout) * time.Second))
+		conn.SetReadDeadline(time.Now().Add(n.ReadTimeout.Duration))
 		// Prepare reader
 		reader := bufio.NewReader(conn)
 		tp := textproto.NewReader(reader)
@@ -85,7 +90,7 @@ func (t *NetResponse) TcpGather() (map[string]interface{}, error) {
 			fields["string_found"] = false
 		} else {
 			// Looking for string in answer
-			RegEx := regexp.MustCompile(`.*` + t.Expect + `.*`)
+			RegEx := regexp.MustCompile(`.*` + n.Expect + `.*`)
 			find := RegEx.FindString(string(data))
 			if find != "" {
 				fields["string_found"] = true
@@ -99,13 +104,13 @@ func (t *NetResponse) TcpGather() (map[string]interface{}, error) {
 	return fields, nil
 }
 
-func (u *NetResponse) UdpGather() (map[string]interface{}, error) {
+func (n *NetResponse) UdpGather() (map[string]interface{}, error) {
 	// Prepare fields
 	fields := make(map[string]interface{})
 	// Start Timer
 	start := time.Now()
 	// Resolving
-	udpAddr, err := net.ResolveUDPAddr("udp", u.Address)
+	udpAddr, err := net.ResolveUDPAddr("udp", n.Address)
 	LocalAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	// Connecting
 	conn, err := net.DialUDP("udp", LocalAddr, udpAddr)
@@ -115,11 +120,11 @@ func (u *NetResponse) UdpGather() (map[string]interface{}, error) {
 		return nil, err
 	}
 	// Send string
-	msg := []byte(u.Send)
+	msg := []byte(n.Send)
 	conn.Write(msg)
 	// Read string
 	// Set read timeout
-	conn.SetReadDeadline(time.Now().Add(time.Duration(u.ReadTimeout) * time.Second))
+	conn.SetReadDeadline(time.Now().Add(n.ReadTimeout.Duration))
 	// Read
 	buf := make([]byte, 1024)
 	_, _, err = conn.ReadFromUDP(buf)
@@ -130,7 +135,7 @@ func (u *NetResponse) UdpGather() (map[string]interface{}, error) {
 		return nil, err
 	} else {
 		// Looking for string in answer
-		RegEx := regexp.MustCompile(`.*` + u.Expect + `.*`)
+		RegEx := regexp.MustCompile(`.*` + n.Expect + `.*`)
 		find := RegEx.FindString(string(buf))
 		if find != "" {
 			fields["string_found"] = true
@@ -142,41 +147,41 @@ func (u *NetResponse) UdpGather() (map[string]interface{}, error) {
 	return fields, nil
 }
 
-func (c *NetResponse) Gather(acc telegraf.Accumulator) error {
+func (n *NetResponse) Gather(acc telegraf.Accumulator) error {
 	// Set default values
-	if c.Timeout == 0 {
-		c.Timeout = 1.0
+	if n.Timeout.Duration == 0 {
+		n.Timeout.Duration = time.Second
 	}
-	if c.ReadTimeout == 0 {
-		c.ReadTimeout = 1.0
+	if n.ReadTimeout.Duration == 0 {
+		n.ReadTimeout.Duration = time.Second
 	}
 	// Check send and expected string
-	if c.Protocol == "udp" && c.Send == "" {
+	if n.Protocol == "udp" && n.Send == "" {
 		return errors.New("Send string cannot be empty")
 	}
-	if c.Protocol == "udp" && c.Expect == "" {
+	if n.Protocol == "udp" && n.Expect == "" {
 		return errors.New("Expected string cannot be empty")
 	}
 	// Prepare host and port
-	host, port, err := net.SplitHostPort(c.Address)
+	host, port, err := net.SplitHostPort(n.Address)
 	if err != nil {
 		return err
 	}
 	if host == "" {
-		c.Address = "localhost:" + port
+		n.Address = "localhost:" + port
 	}
 	if port == "" {
 		return errors.New("Bad port")
 	}
 	// Prepare data
-	tags := map[string]string{"host": host, "port": port}
+	tags := map[string]string{"server": host, "port": port}
 	var fields map[string]interface{}
 	// Gather data
-	if c.Protocol == "tcp" {
-		fields, err = c.TcpGather()
+	if n.Protocol == "tcp" {
+		fields, err = n.TcpGather()
 		tags["protocol"] = "tcp"
-	} else if c.Protocol == "udp" {
-		fields, err = c.UdpGather()
+	} else if n.Protocol == "udp" {
+		fields, err = n.UdpGather()
 		tags["protocol"] = "udp"
 	} else {
 		return errors.New("Bad protocol")

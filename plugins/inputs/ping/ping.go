@@ -9,15 +9,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/internal"
 	"github.com/influxdata/telegraf/plugins/inputs"
 )
 
 // HostPinger is a function that runs the "ping" function using a list of
 // passed arguments. This can be easily switched with a mocked ping function
 // for unit test purposes (see ping_test.go)
-type HostPinger func(args ...string) (string, error)
+type HostPinger func(timeout float64, args ...string) (string, error)
 
 type Ping struct {
 	// Interval at which to ping (ping -i <INTERVAL>)
@@ -26,7 +28,7 @@ type Ping struct {
 	// Number of pings to send (ping -c <COUNT>)
 	Count int
 
-	// Ping timeout, in seconds. 0 means no timeout (ping -t <TIMEOUT>)
+	// Ping timeout, in seconds. 0 means no timeout (ping -W <TIMEOUT>)
 	Timeout float64
 
 	// Interface to send ping from (ping -I <INTERFACE>)
@@ -43,20 +45,20 @@ func (_ *Ping) Description() string {
 	return "Ping given url(s) and return statistics"
 }
 
-var sampleConfig = `
+const sampleConfig = `
   ## NOTE: this plugin forks the ping command. You may need to set capabilities
   ## via setcap cap_net_raw+p /bin/ping
-
+  #
   ## urls to ping
   urls = ["www.google.com"] # required
-  ## number of pings to send (ping -c <COUNT>)
-  count = 1 # required
+  ## number of pings to send per collection (ping -c <COUNT>)
+  # count = 1
   ## interval, in s, at which to ping. 0 == default (ping -i <PING_INTERVAL>)
-  ping_interval = 0.0
-  ## ping timeout, in s. 0 == no timeout (ping -t <TIMEOUT>)
-  timeout = 0.0
+  # ping_interval = 1.0
+  ## per-ping timeout, in s. 0 == no timeout (ping -W <TIMEOUT>)
+  # timeout = 1.0
   ## interface to send ping from (ping -I <INTERFACE>)
-  interface = ""
+  # interface = ""
 `
 
 func (_ *Ping) SampleConfig() string {
@@ -71,17 +73,18 @@ func (p *Ping) Gather(acc telegraf.Accumulator) error {
 	// Spin off a go routine for each url to ping
 	for _, url := range p.Urls {
 		wg.Add(1)
-		go func(url string, acc telegraf.Accumulator) {
+		go func(u string) {
 			defer wg.Done()
-			args := p.args(url)
-			out, err := p.pingHost(args...)
+			args := p.args(u)
+			totalTimeout := float64(p.Count)*p.Timeout + float64(p.Count-1)*p.PingInterval
+			out, err := p.pingHost(totalTimeout, args...)
 			if err != nil {
 				// Combine go err + stderr output
 				errorChannel <- errors.New(
 					strings.TrimSpace(out) + ", " + err.Error())
 			}
-			tags := map[string]string{"url": url}
-			trans, rec, avg, err := processPingOutput(out)
+			tags := map[string]string{"url": u}
+			trans, rec, avg, stddev, err := processPingOutput(out)
 			if err != nil {
 				// fatal error
 				errorChannel <- err
@@ -97,8 +100,11 @@ func (p *Ping) Gather(acc telegraf.Accumulator) error {
 			if avg > 0 {
 				fields["average_response_ms"] = avg
 			}
+			if stddev > 0 {
+				fields["standard_deviation_ms"] = stddev
+			}
 			acc.AddFields("ping", fields, tags)
-		}(url, acc)
+		}(url)
 	}
 
 	wg.Wait()
@@ -116,13 +122,14 @@ func (p *Ping) Gather(acc telegraf.Accumulator) error {
 	return errors.New(strings.Join(errorStrings, "\n"))
 }
 
-func hostPinger(args ...string) (string, error) {
+func hostPinger(timeout float64, args ...string) (string, error) {
 	bin, err := exec.LookPath("ping")
 	if err != nil {
 		return "", err
 	}
 	c := exec.Command(bin, args...)
-	out, err := c.CombinedOutput()
+	out, err := internal.CombinedOutputTimeout(c,
+		time.Second*time.Duration(timeout+1))
 	return string(out), err
 }
 
@@ -135,8 +142,8 @@ func (p *Ping) args(url string) []string {
 	}
 	if p.Timeout > 0 {
 		switch runtime.GOOS {
-		case "darwin", "freebsd":
-			args = append(args, "-t", strconv.FormatFloat(p.Timeout, 'f', 1, 64))
+		case "darwin":
+			args = append(args, "-W", strconv.FormatFloat(p.Timeout*1000, 'f', 1, 64))
 		case "linux":
 			args = append(args, "-W", strconv.FormatFloat(p.Timeout, 'f', 1, 64))
 		default:
@@ -162,9 +169,9 @@ func (p *Ping) args(url string) []string {
 //     round-trip min/avg/max/stddev = 34.843/43.508/52.172/8.664 ms
 //
 // It returns (<transmitted packets>, <received packets>, <average response>)
-func processPingOutput(out string) (int, int, float64, error) {
+func processPingOutput(out string) (int, int, float64, float64, error) {
 	var trans, recv int
-	var avg float64
+	var avg, stddev float64
 	// Set this error to nil if we find a 'transmitted' line
 	err := errors.New("Fatal error processing ping output")
 	lines := strings.Split(out, "\n")
@@ -176,26 +183,32 @@ func processPingOutput(out string) (int, int, float64, error) {
 			// Transmitted packets
 			trans, err = strconv.Atoi(strings.Split(stats[0], " ")[0])
 			if err != nil {
-				return trans, recv, avg, err
+				return trans, recv, avg, stddev, err
 			}
 			// Received packets
 			recv, err = strconv.Atoi(strings.Split(stats[1], " ")[0])
 			if err != nil {
-				return trans, recv, avg, err
+				return trans, recv, avg, stddev, err
 			}
 		} else if strings.Contains(line, "min/avg/max") {
-			stats := strings.Split(line, " = ")[1]
+			stats := strings.Split(line, " ")[3]
 			avg, err = strconv.ParseFloat(strings.Split(stats, "/")[1], 64)
+			stddev, err = strconv.ParseFloat(strings.Split(stats, "/")[3], 64)
 			if err != nil {
-				return trans, recv, avg, err
+				return trans, recv, avg, stddev, err
 			}
 		}
 	}
-	return trans, recv, avg, err
+	return trans, recv, avg, stddev, err
 }
 
 func init() {
 	inputs.Add("ping", func() telegraf.Input {
-		return &Ping{pingHost: hostPinger}
+		return &Ping{
+			pingHost:     hostPinger,
+			PingInterval: 1.0,
+			Count:        1,
+			Timeout:      1.0,
+		}
 	})
 }

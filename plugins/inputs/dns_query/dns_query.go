@@ -3,12 +3,14 @@ package dns_query
 import (
 	"errors"
 	"fmt"
-	"github.com/influxdata/telegraf"
-	"github.com/influxdata/telegraf/plugins/inputs"
 	"github.com/miekg/dns"
 	"net"
 	"strconv"
 	"time"
+
+	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/internal/errchan"
+	"github.com/influxdata/telegraf/plugins/inputs"
 )
 
 type DnsQuery struct {
@@ -35,7 +37,8 @@ var sampleConfig = `
   ## Domains or subdomains to query. "."(root) is default
   domains = ["."] # optional
 
-  ## Query record type. Posible values: A, AAAA, CNAME, MX,  NS, PTR, TXT, SOA, SPF, SRV. Default is "NS"
+  ## Query record type. Default is "A"
+  ## Posible values: A, AAAA, CNAME, MX, NS, PTR, TXT, SOA, SPF, SRV.
   record_type = "A" # optional
 
   ## Dns server port. 53 is default
@@ -54,12 +57,12 @@ func (d *DnsQuery) Description() string {
 }
 func (d *DnsQuery) Gather(acc telegraf.Accumulator) error {
 	d.setDefaultValues()
+
+	errChan := errchan.New(len(d.Domains) * len(d.Servers))
 	for _, domain := range d.Domains {
 		for _, server := range d.Servers {
 			dnsQueryTime, err := d.getDnsQueryTime(domain, server)
-			if err != nil {
-				return err
-			}
+			errChan.C <- err
 			tags := map[string]string{
 				"server":      server,
 				"domain":      domain,
@@ -71,7 +74,7 @@ func (d *DnsQuery) Gather(acc telegraf.Accumulator) error {
 		}
 	}
 
-	return nil
+	return errChan.Error()
 }
 
 func (d *DnsQuery) setDefaultValues() {

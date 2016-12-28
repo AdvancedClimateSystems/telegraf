@@ -3,17 +3,22 @@ package haproxy
 import (
 	"encoding/csv"
 	"fmt"
-	"github.com/influxdata/telegraf"
-	"github.com/influxdata/telegraf/plugins/inputs"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/internal/errchan"
+	"github.com/influxdata/telegraf/plugins/inputs"
 )
 
-//CSV format: https://cbonte.github.io/haproxy-dconv/configuration-1.5.html#9.1
+//CSV format: https://cbonte.github.io/haproxy-dconv/1.5/configuration.html#9.1
 const (
 	HF_PXNAME         = 0  // 0. pxname [LFBS]: proxy name
 	HF_SVNAME         = 1  // 1. svname [LFBS]: service name (FRONTEND for frontend, BACKEND for backend, any name for server/listener)
@@ -47,7 +52,7 @@ const (
 	HF_THROTTLE       = 29 //29. throttle [...S]: current throttle percentage for the server, when slowstart is active, or no value if not in slowstart.
 	HF_LBTOT          = 30 //30. lbtot [..BS]: total number of times a server was selected, either for new sessions, or when re-dispatching. The server counter is the number of times that server was selected.
 	HF_TRACKED        = 31 //31. tracked [...S]: id of proxy/server if tracking is enabled.
-	HF_TYPE           = 32 //32. type [LFBS]: (0                                                                                                                                                                                                  = frontend, 1 = backend, 2 = server, 3 = socket/listener)
+	HF_TYPE           = 32 //32. type [LFBS]: (0 = frontend, 1 = backend, 2 = server, 3 = socket/listener)
 	HF_RATE           = 33 //33. rate [.FBS]: number of sessions per second over last elapsed second
 	HF_RATE_LIM       = 34 //34. rate_lim [.F..]: configured limit on new sessions per second
 	HF_RATE_MAX       = 35 //35. rate_max [.FBS]: max number of new sessions per second
@@ -88,11 +93,16 @@ type haproxy struct {
 var sampleConfig = `
   ## An array of address to gather stats about. Specify an ip on hostname
   ## with optional port. ie localhost, 10.10.3.33:1936, etc.
-
-  ## If no servers are specified, then default to 127.0.0.1:1936
-  servers = ["http://myhaproxy.com:1936", "http://anotherhaproxy.com:1936"]
-  ## Or you can also use local socket(not work yet)
-  ## servers = ["socket://run/haproxy/admin.sock"]
+  ## Make sure you specify the complete path to the stats endpoint
+  ## including the protocol, ie http://10.10.3.33:1936/haproxy?stats
+  #
+  ## If no servers are specified, then default to 127.0.0.1:1936/haproxy?stats
+  servers = ["http://myhaproxy.com:1936/haproxy?stats"]
+  ##
+  ## You can also use local socket with standard wildcard globbing.
+  ## Server address not starting with 'http' will be treated as a possible
+  ## socket, so both examples below are valid.
+  ## servers = ["socket:/run/haproxy/admin.sock", "/run/haproxy/*.sock"]
 `
 
 func (r *haproxy) SampleConfig() string {
@@ -107,27 +117,72 @@ func (r *haproxy) Description() string {
 // Returns one of the errors encountered while gather stats (if any).
 func (g *haproxy) Gather(acc telegraf.Accumulator) error {
 	if len(g.Servers) == 0 {
-		return g.gatherServer("http://127.0.0.1:1936", acc)
+		return g.gatherServer("http://127.0.0.1:1936/haproxy?stats", acc)
+	}
+
+	endpoints := make([]string, 0, len(g.Servers))
+
+	for _, endpoint := range g.Servers {
+
+		if strings.HasPrefix(endpoint, "http") {
+			endpoints = append(endpoints, endpoint)
+			continue
+		}
+
+		socketPath := getSocketAddr(endpoint)
+
+		matches, err := filepath.Glob(socketPath)
+
+		if err != nil {
+			return err
+		}
+
+		if len(matches) == 0 {
+			endpoints = append(endpoints, socketPath)
+		} else {
+			for _, match := range matches {
+				endpoints = append(endpoints, match)
+			}
+		}
 	}
 
 	var wg sync.WaitGroup
-
-	var outerr error
-
-	for _, serv := range g.Servers {
-		wg.Add(1)
+	errChan := errchan.New(len(endpoints))
+	wg.Add(len(endpoints))
+	for _, server := range endpoints {
 		go func(serv string) {
 			defer wg.Done()
-			outerr = g.gatherServer(serv, acc)
-		}(serv)
+			errChan.C <- g.gatherServer(serv, acc)
+		}(server)
 	}
 
 	wg.Wait()
+	return errChan.Error()
+}
 
-	return outerr
+func (g *haproxy) gatherServerSocket(addr string, acc telegraf.Accumulator) error {
+	socketPath := getSocketAddr(addr)
+
+	c, err := net.Dial("unix", socketPath)
+
+	if err != nil {
+		return fmt.Errorf("Could not connect to socket '%s': %s", addr, err)
+	}
+
+	_, errw := c.Write([]byte("show stat\n"))
+
+	if errw != nil {
+		return fmt.Errorf("Could not write to socket '%s': %s", addr, errw)
+	}
+
+	return importCsvResult(c, acc, socketPath)
 }
 
 func (g *haproxy) gatherServer(addr string, acc telegraf.Accumulator) error {
+	if !strings.HasPrefix(addr, "http") {
+		return g.gatherServerSocket(addr, acc)
+	}
+
 	if g.client == nil {
 		tr := &http.Transport{ResponseHeaderTimeout: time.Duration(3 * time.Second)}
 		client := &http.Client{
@@ -137,12 +192,16 @@ func (g *haproxy) gatherServer(addr string, acc telegraf.Accumulator) error {
 		g.client = client
 	}
 
+	if !strings.HasSuffix(addr, ";csv") {
+		addr += "/;csv"
+	}
+
 	u, err := url.Parse(addr)
 	if err != nil {
 		return fmt.Errorf("Unable parse server address '%s': %s", addr, err)
 	}
 
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s://%s%s/;csv", u.Scheme, u.Host, u.Path), nil)
+	req, err := http.NewRequest("GET", addr, nil)
 	if u.User != nil {
 		p, _ := u.User.Password()
 		req.SetBasicAuth(u.User.Username(), p)
@@ -154,10 +213,20 @@ func (g *haproxy) gatherServer(addr string, acc telegraf.Accumulator) error {
 	}
 
 	if res.StatusCode != 200 {
-		return fmt.Errorf("Unable to get valid stat result from '%s': %s", addr, err)
+		return fmt.Errorf("Unable to get valid stat result from '%s', http response code : %d", addr, res.StatusCode)
 	}
 
 	return importCsvResult(res.Body, acc, u.Host)
+}
+
+func getSocketAddr(sock string) string {
+	socketAddr := strings.Split(sock, ":")
+
+	if len(socketAddr) >= 2 {
+		return socketAddr[1]
+	} else {
+		return socketAddr[0]
+	}
 }
 
 func importCsvResult(r io.Reader, acc telegraf.Accumulator, host string) error {
@@ -193,6 +262,11 @@ func importCsvResult(r io.Reader, acc telegraf.Accumulator, host string) error {
 				ival, err := strconv.ParseUint(v, 10, 64)
 				if err == nil {
 					fields["smax"] = ival
+				}
+			case HF_SLIM:
+				ival, err := strconv.ParseUint(v, 10, 64)
+				if err == nil {
+					fields["slim"] = ival
 				}
 			case HF_STOT:
 				ival, err := strconv.ParseUint(v, 10, 64)

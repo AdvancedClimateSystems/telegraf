@@ -19,6 +19,12 @@ type Kafka struct {
 	Topic string
 	// Routing Key Tag
 	RoutingTag string `toml:"routing_tag"`
+	// Compression Codec Tag
+	CompressionCodec int
+	// RequiredAcks Tag
+	RequiredAcks int
+	// MaxRetry Tag
+	MaxRetry int
 
 	// Legacy SSL config options
 	// TLS client certificate
@@ -53,6 +59,32 @@ var sampleConfig = `
   ##  ie, if this tag exists, it's value will be used as the routing key
   routing_tag = "host"
 
+  ## CompressionCodec represents the various compression codecs recognized by
+  ## Kafka in messages.
+  ##  0 : No compression
+  ##  1 : Gzip compression
+  ##  2 : Snappy compression
+  compression_codec = 0
+
+  ##  RequiredAcks is used in Produce Requests to tell the broker how many
+  ##  replica acknowledgements it must see before responding
+  ##   0 : the producer never waits for an acknowledgement from the broker.
+  ##       This option provides the lowest latency but the weakest durability
+  ##       guarantees (some data will be lost when a server fails).
+  ##   1 : the producer gets an acknowledgement after the leader replica has
+  ##       received the data. This option provides better durability as the
+  ##       client waits until the server acknowledges the request as successful
+  ##       (only messages that were written to the now-dead leader but not yet
+  ##       replicated will be lost).
+  ##   -1: the producer gets an acknowledgement after all in-sync replicas have
+  ##       received the data. This option provides the best durability, we
+  ##       guarantee that no messages will be lost as long as at least one in
+  ##       sync replica remains.
+  required_acks = -1
+
+  ##  The total number of times to retry sending a message
+  max_retry = 3
+
   ## Optional SSL Config
   # ssl_ca = "/etc/telegraf/ca.pem"
   # ssl_cert = "/etc/telegraf/cert.pem"
@@ -60,7 +92,7 @@ var sampleConfig = `
   ## Use SSL but skip chain & host verification
   # insecure_skip_verify = false
 
-  ## Data format to output. This can be "influx" or "graphite"
+  ## Data format to output.
   ## Each data format has it's own unique set of configuration options, read
   ## more about them here:
   ## https://github.com/influxdata/telegraf/blob/master/docs/DATA_FORMATS_OUTPUT.md
@@ -73,10 +105,10 @@ func (k *Kafka) SetSerializer(serializer serializers.Serializer) {
 
 func (k *Kafka) Connect() error {
 	config := sarama.NewConfig()
-	// Wait for all in-sync replicas to ack the message
-	config.Producer.RequiredAcks = sarama.WaitForAll
-	// Retry up to 10 times to produce the message
-	config.Producer.Retry.Max = 10
+
+	config.Producer.RequiredAcks = sarama.RequiredAcks(k.RequiredAcks)
+	config.Producer.Compression = sarama.CompressionCodec(k.CompressionCodec)
+	config.Producer.Retry.Max = k.MaxRetry
 
 	// Legacy support ssl config
 	if k.Certificate != "" {
@@ -122,26 +154,23 @@ func (k *Kafka) Write(metrics []telegraf.Metric) error {
 	}
 
 	for _, metric := range metrics {
-		values, err := k.serializer.Serialize(metric)
+		buf, err := k.serializer.Serialize(metric)
 		if err != nil {
 			return err
 		}
 
-		var pubErr error
-		for _, value := range values {
-			m := &sarama.ProducerMessage{
-				Topic: k.Topic,
-				Value: sarama.StringEncoder(value),
-			}
-			if h, ok := metric.Tags()[k.RoutingTag]; ok {
-				m.Key = sarama.StringEncoder(h)
-			}
-
-			_, _, pubErr = k.producer.SendMessage(m)
+		m := &sarama.ProducerMessage{
+			Topic: k.Topic,
+			Value: sarama.ByteEncoder(buf),
+		}
+		if h, ok := metric.Tags()[k.RoutingTag]; ok {
+			m.Key = sarama.StringEncoder(h)
 		}
 
-		if pubErr != nil {
-			return fmt.Errorf("FAILED to send kafka message: %s\n", pubErr)
+		_, _, err = k.producer.SendMessage(m)
+
+		if err != nil {
+			return fmt.Errorf("FAILED to send kafka message: %s\n", err)
 		}
 	}
 	return nil
@@ -149,6 +178,9 @@ func (k *Kafka) Write(metrics []telegraf.Metric) error {
 
 func init() {
 	outputs.Add("kafka", func() telegraf.Output {
-		return &Kafka{}
+		return &Kafka{
+			MaxRetry:     3,
+			RequiredAcks: -1,
+		}
 	})
 }

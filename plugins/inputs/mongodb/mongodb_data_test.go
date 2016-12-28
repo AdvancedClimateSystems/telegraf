@@ -13,24 +13,26 @@ var tags = make(map[string]string)
 func TestAddNonReplStats(t *testing.T) {
 	d := NewMongodbData(
 		&StatLine{
-			StorageEngine:  "",
-			Time:           time.Now(),
-			Insert:         0,
-			Query:          0,
-			Update:         0,
-			Delete:         0,
-			GetMore:        0,
-			Command:        0,
-			Flushes:        0,
-			Virtual:        0,
-			Resident:       0,
-			QueuedReaders:  0,
-			QueuedWriters:  0,
-			ActiveReaders:  0,
-			ActiveWriters:  0,
-			NetIn:          0,
-			NetOut:         0,
-			NumConnections: 0,
+			StorageEngine:    "",
+			Time:             time.Now(),
+			Insert:           0,
+			Query:            0,
+			Update:           0,
+			Delete:           0,
+			GetMore:          0,
+			Command:          0,
+			Flushes:          0,
+			Virtual:          0,
+			Resident:         0,
+			QueuedReaders:    0,
+			QueuedWriters:    0,
+			ActiveReaders:    0,
+			ActiveWriters:    0,
+			NetIn:            0,
+			NetOut:           0,
+			NumConnections:   0,
+			Passes:           0,
+			DeletedDocuments: 0,
 		},
 		tags,
 	)
@@ -93,12 +95,12 @@ func TestStateTag(t *testing.T) {
 			Insert:        0,
 			Query:         0,
 			NodeType:      "PRI",
+			NodeState:     "PRIMARY",
 		},
 		tags,
 	)
 
 	stateTags := make(map[string]string)
-	stateTags["state"] = "PRI"
 
 	var acc testutil.Accumulator
 
@@ -113,6 +115,7 @@ func TestStateTag(t *testing.T) {
 		"getmores_per_sec":      int64(0),
 		"inserts_per_sec":       int64(0),
 		"member_status":         "PRI",
+		"state":                 "PRIMARY",
 		"net_in_bytes":          int64(0),
 		"net_out_bytes":         int64(0),
 		"open_connections":      int64(0),
@@ -125,9 +128,13 @@ func TestStateTag(t *testing.T) {
 		"repl_inserts_per_sec":  int64(0),
 		"repl_queries_per_sec":  int64(0),
 		"repl_updates_per_sec":  int64(0),
+		"repl_lag":              int64(0),
 		"resident_megabytes":    int64(0),
 		"updates_per_sec":       int64(0),
 		"vsize_megabytes":       int64(0),
+		"ttl_deletes_per_sec":   int64(0),
+		"ttl_passes_per_sec":    int64(0),
+		"jumbo_chunks":          int64(0),
 	}
 	acc.AssertContainsTaggedFields(t, "mongodb", fields, stateTags)
 }

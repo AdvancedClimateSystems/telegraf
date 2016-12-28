@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/metric"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -62,6 +62,13 @@ func TestTemplateApply(t *testing.T) {
 			tags:        map[string]string{"hostname": "server01", "region": "us-west"},
 		},
 		{
+			test:        "metric with multiple tags",
+			input:       "server01.example.org.cpu.us-west",
+			template:    "hostname.hostname.hostname.measurement.region",
+			measurement: "cpu",
+			tags:        map[string]string{"hostname": "server01.example.org", "region": "us-west"},
+		},
+		{
 			test: "no metric",
 			tags: make(map[string]string),
 			err:  `no measurement specified for template. ""`,
@@ -93,6 +100,20 @@ func TestTemplateApply(t *testing.T) {
 			template:    ".zone..measurement*",
 			measurement: "cpu.load",
 			tags:        map[string]string{"zone": "us-west"},
+		},
+		{
+			test:        "conjoined fields",
+			input:       "prod.us-west.server01.cpu.util.idle.percent",
+			template:    "env.zone.host.measurement.measurement.field*",
+			measurement: "cpu.util",
+			tags:        map[string]string{"env": "prod", "zone": "us-west", "host": "server01"},
+		},
+		{
+			test:        "multiple fields",
+			input:       "prod.us-west.server01.cpu.util.idle.percent.free",
+			template:    "env.zone.host.measurement.measurement.field.field.reading",
+			measurement: "cpu.util",
+			tags:        map[string]string{"env": "prod", "zone": "us-west", "host": "server01", "reading": "free"},
 		},
 	}
 
@@ -128,7 +149,7 @@ func TestParseMissingMeasurement(t *testing.T) {
 	}
 }
 
-func TestParse(t *testing.T) {
+func TestParseLine(t *testing.T) {
 	testTime := time.Now().Round(time.Second)
 	epochTime := testTime.Unix()
 	strTime := strconv.FormatInt(epochTime, 10)
@@ -187,6 +208,12 @@ func TestParse(t *testing.T) {
 			template: "measurement",
 			err:      `field "cpu" time: strconv.ParseFloat: parsing "14199724z57825": invalid syntax`,
 		},
+		{
+			test:     "measurement* and field* (invalid)",
+			input:    `prod.us-west.server01.cpu.util.idle.percent 99.99 1419972457825`,
+			template: "env.zone.host.measurement*.field*",
+			err:      `either 'field*' or 'measurement*' can be used in each template (but not both together): "env.zone.host.measurement*.field*"`,
+		},
 	}
 
 	for _, test := range tests {
@@ -223,6 +250,107 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestParse(t *testing.T) {
+	testTime := time.Now().Round(time.Second)
+	epochTime := testTime.Unix()
+	strTime := strconv.FormatInt(epochTime, 10)
+
+	var tests = []struct {
+		test        string
+		input       []byte
+		measurement string
+		tags        map[string]string
+		value       float64
+		time        time.Time
+		template    string
+		err         string
+	}{
+		{
+			test:        "normal case",
+			input:       []byte(`cpu.foo.bar 50 ` + strTime),
+			template:    "measurement.foo.bar",
+			measurement: "cpu",
+			tags: map[string]string{
+				"foo": "foo",
+				"bar": "bar",
+			},
+			value: 50,
+			time:  testTime,
+		},
+		{
+			test:        "metric only with float value",
+			input:       []byte(`cpu 50.554 ` + strTime),
+			measurement: "cpu",
+			template:    "measurement",
+			value:       50.554,
+			time:        testTime,
+		},
+		{
+			test:     "missing metric",
+			input:    []byte(`1419972457825`),
+			template: "measurement",
+			err:      `received "1419972457825" which doesn't have required fields`,
+		},
+		{
+			test:     "should error parsing invalid float",
+			input:    []byte(`cpu 50.554z 1419972457825`),
+			template: "measurement",
+			err:      `field "cpu" value: strconv.ParseFloat: parsing "50.554z": invalid syntax`,
+		},
+		{
+			test:     "should error parsing invalid int",
+			input:    []byte(`cpu 50z 1419972457825`),
+			template: "measurement",
+			err:      `field "cpu" value: strconv.ParseFloat: parsing "50z": invalid syntax`,
+		},
+		{
+			test:     "should error parsing invalid time",
+			input:    []byte(`cpu 50.554 14199724z57825`),
+			template: "measurement",
+			err:      `field "cpu" time: strconv.ParseFloat: parsing "14199724z57825": invalid syntax`,
+		},
+		{
+			test:     "measurement* and field* (invalid)",
+			input:    []byte(`prod.us-west.server01.cpu.util.idle.percent 99.99 1419972457825`),
+			template: "env.zone.host.measurement*.field*",
+			err:      `either 'field*' or 'measurement*' can be used in each template (but not both together): "env.zone.host.measurement*.field*"`,
+		},
+	}
+
+	for _, test := range tests {
+		p, err := NewGraphiteParser("", []string{test.template}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error creating graphite parser: %v", err)
+		}
+
+		metrics, err := p.Parse(test.input)
+		if errstr(err) != test.err {
+			t.Fatalf("err does not match.  expected [%v], got [%v]", test.err, err)
+		}
+		if err != nil {
+			// If we erred out,it was intended and the following tests won't work
+			continue
+		}
+		if metrics[0].Name() != test.measurement {
+			t.Fatalf("name parse failer.  expected %v, got %v",
+				test.measurement, metrics[0].Name())
+		}
+		if len(metrics[0].Tags()) != len(test.tags) {
+			t.Fatalf("tags len mismatch.  expected %d, got %d",
+				len(test.tags), len(metrics[0].Tags()))
+		}
+		f := metrics[0].Fields()["value"].(float64)
+		if metrics[0].Fields()["value"] != f {
+			t.Fatalf("floatValue value mismatch.  expected %v, got %v",
+				test.value, f)
+		}
+		if metrics[0].Time().UnixNano()/1000000 != test.time.UnixNano()/1000000 {
+			t.Fatalf("time value mismatch.  expected %v, got %v",
+				test.time.UnixNano(), metrics[0].Time().UnixNano())
+		}
+	}
+}
+
 func TestParseNaN(t *testing.T) {
 	p, err := NewGraphiteParser("", []string{"measurement*"}, nil)
 	assert.NoError(t, err)
@@ -241,7 +369,7 @@ func TestFilterMatchDefault(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("miss.servers.localhost.cpu_load",
+	exp, err := metric.New("miss.servers.localhost.cpu_load",
 		map[string]string{},
 		map[string]interface{}{"value": float64(11)},
 		time.Unix(1435077219, 0))
@@ -259,7 +387,7 @@ func TestFilterMatchMultipleMeasurement(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("cpu.cpu_load.10",
+	exp, err := metric.New("cpu.cpu_load.10",
 		map[string]string{"host": "localhost"},
 		map[string]interface{}{"value": float64(11)},
 		time.Unix(1435077219, 0))
@@ -278,7 +406,7 @@ func TestFilterMatchMultipleMeasurementSeparator(t *testing.T) {
 	)
 	assert.NoError(t, err)
 
-	exp, err := telegraf.NewMetric("cpu_cpu_load_10",
+	exp, err := metric.New("cpu_cpu_load_10",
 		map[string]string{"host": "localhost"},
 		map[string]interface{}{"value": float64(11)},
 		time.Unix(1435077219, 0))
@@ -296,7 +424,7 @@ func TestFilterMatchSingle(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("cpu_load",
+	exp, err := metric.New("cpu_load",
 		map[string]string{"host": "localhost"},
 		map[string]interface{}{"value": float64(11)},
 		time.Unix(1435077219, 0))
@@ -313,7 +441,7 @@ func TestParseNoMatch(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("servers.localhost.memory.VmallocChunk",
+	exp, err := metric.New("servers.localhost.memory.VmallocChunk",
 		map[string]string{},
 		map[string]interface{}{"value": float64(11)},
 		time.Unix(1435077219, 0))
@@ -331,7 +459,7 @@ func TestFilterMatchWildcard(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("cpu_load",
+	exp, err := metric.New("cpu_load",
 		map[string]string{"host": "localhost"},
 		map[string]interface{}{"value": float64(11)},
 		time.Unix(1435077219, 0))
@@ -351,7 +479,7 @@ func TestFilterMatchExactBeforeWildcard(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("cpu_load",
+	exp, err := metric.New("cpu_load",
 		map[string]string{"host": "localhost"},
 		map[string]interface{}{"value": float64(11)},
 		time.Unix(1435077219, 0))
@@ -376,16 +504,11 @@ func TestFilterMatchMostLongestFilter(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("cpu_load",
-		map[string]string{"host": "localhost", "resource": "cpu"},
-		map[string]interface{}{"value": float64(11)},
-		time.Unix(1435077219, 0))
-	assert.NoError(t, err)
-
 	m, err := p.ParseLine("servers.localhost.cpu.cpu_load 11 1435077219")
 	assert.NoError(t, err)
 
-	assert.Equal(t, exp.String(), m.String())
+	assert.Contains(t, m.String(), ",host=localhost")
+	assert.Contains(t, m.String(), ",resource=cpu")
 }
 
 func TestFilterMatchMultipleWildcards(t *testing.T) {
@@ -400,7 +523,7 @@ func TestFilterMatchMultipleWildcards(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("cpu_load",
+	exp, err := metric.New("cpu_load",
 		map[string]string{"host": "server01"},
 		map[string]interface{}{"value": float64(11)},
 		time.Unix(1435077219, 0))
@@ -422,16 +545,12 @@ func TestParseDefaultTags(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("cpu_load",
-		map[string]string{"host": "localhost", "region": "us-east", "zone": "1c"},
-		map[string]interface{}{"value": float64(11)},
-		time.Unix(1435077219, 0))
-	assert.NoError(t, err)
-
 	m, err := p.ParseLine("servers.localhost.cpu_load 11 1435077219")
 	assert.NoError(t, err)
 
-	assert.Equal(t, exp.String(), m.String())
+	assert.Contains(t, m.String(), ",host=localhost")
+	assert.Contains(t, m.String(), ",region=us-east")
+	assert.Contains(t, m.String(), ",zone=1c")
 }
 
 func TestParseDefaultTemplateTags(t *testing.T) {
@@ -443,16 +562,12 @@ func TestParseDefaultTemplateTags(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("cpu_load",
-		map[string]string{"host": "localhost", "region": "us-east", "zone": "1c"},
-		map[string]interface{}{"value": float64(11)},
-		time.Unix(1435077219, 0))
-	assert.NoError(t, err)
-
 	m, err := p.ParseLine("servers.localhost.cpu_load 11 1435077219")
 	assert.NoError(t, err)
 
-	assert.Equal(t, exp.String(), m.String())
+	assert.Contains(t, m.String(), ",host=localhost")
+	assert.Contains(t, m.String(), ",region=us-east")
+	assert.Contains(t, m.String(), ",zone=1c")
 }
 
 func TestParseDefaultTemplateTagsOverridGlobal(t *testing.T) {
@@ -464,16 +579,12 @@ func TestParseDefaultTemplateTagsOverridGlobal(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("cpu_load",
-		map[string]string{"host": "localhost", "region": "us-east", "zone": "1c"},
-		map[string]interface{}{"value": float64(11)},
-		time.Unix(1435077219, 0))
-	assert.NoError(t, err)
-
 	m, err := p.ParseLine("servers.localhost.cpu_load 11 1435077219")
 	assert.NoError(t, err)
 
-	assert.Equal(t, exp.String(), m.String())
+	assert.Contains(t, m.String(), ",host=localhost")
+	assert.Contains(t, m.String(), ",region=us-east")
+	assert.Contains(t, m.String(), ",zone=1c")
 }
 
 func TestParseTemplateWhitespace(t *testing.T) {
@@ -487,16 +598,12 @@ func TestParseTemplateWhitespace(t *testing.T) {
 		t.Fatalf("unexpected error creating parser, got %v", err)
 	}
 
-	exp, err := telegraf.NewMetric("cpu_load",
-		map[string]string{"host": "localhost", "region": "us-east", "zone": "1c"},
-		map[string]interface{}{"value": float64(11)},
-		time.Unix(1435077219, 0))
-	assert.NoError(t, err)
-
 	m, err := p.ParseLine("servers.localhost.cpu_load 11 1435077219")
 	assert.NoError(t, err)
 
-	assert.Equal(t, exp.String(), m.String())
+	assert.Contains(t, m.String(), ",host=localhost")
+	assert.Contains(t, m.String(), ",region=us-east")
+	assert.Contains(t, m.String(), ",zone=1c")
 }
 
 // Test basic functionality of ApplyTemplate
@@ -574,16 +681,91 @@ func TestApplyTemplateField(t *testing.T) {
 	}
 }
 
-func TestApplyTemplateFieldError(t *testing.T) {
+func TestApplyTemplateMultipleFieldsTogether(t *testing.T) {
 	p, err := NewGraphiteParser("_",
-		[]string{"current.* measurement.field.field"}, nil)
+		[]string{"current.* measurement.measurement.field.field"}, nil)
 	assert.NoError(t, err)
 
-	_, _, _, err = p.ApplyTemplate("current.users.logged_in")
-	if err == nil {
-		t.Errorf("Parser.ApplyTemplate unexpected result. got %s, exp %s", err,
-			"'field' can only be used once in each template: current.users.logged_in")
+	measurement, _, field, err := p.ApplyTemplate("current.users.logged_in.ssh")
+
+	assert.Equal(t, "current_users", measurement)
+
+	if field != "logged_in_ssh" {
+		t.Errorf("Parser.ApplyTemplate unexpected result. got %s, exp %s",
+			field, "logged_in_ssh")
 	}
+}
+
+func TestApplyTemplateMultipleFieldsApart(t *testing.T) {
+	p, err := NewGraphiteParser("_",
+		[]string{"current.* measurement.measurement.field.method.field"}, nil)
+	assert.NoError(t, err)
+
+	measurement, _, field, err := p.ApplyTemplate("current.users.logged_in.ssh.total")
+
+	assert.Equal(t, "current_users", measurement)
+
+	if field != "logged_in_total" {
+		t.Errorf("Parser.ApplyTemplate unexpected result. got %s, exp %s",
+			field, "logged_in_total")
+	}
+}
+
+func TestApplyTemplateGreedyField(t *testing.T) {
+	p, err := NewGraphiteParser("_",
+		[]string{"current.* measurement.measurement.field*"}, nil)
+	assert.NoError(t, err)
+
+	measurement, _, field, err := p.ApplyTemplate("current.users.logged_in")
+
+	assert.Equal(t, "current_users", measurement)
+
+	if field != "logged_in" {
+		t.Errorf("Parser.ApplyTemplate unexpected result. got %s, exp %s",
+			field, "logged_in")
+	}
+}
+
+func TestApplyTemplateOverSpecific(t *testing.T) {
+	p, err := NewGraphiteParser(
+		".",
+		[]string{
+			"measurement.host.metric.metric.metric",
+		},
+		nil,
+	)
+	assert.NoError(t, err)
+
+	measurement, tags, _, err := p.ApplyTemplate("net.server001.a.b 2")
+	assert.Equal(t, "net", measurement)
+	assert.Equal(t,
+		map[string]string{"host": "server001", "metric": "a.b"},
+		tags)
+}
+
+func TestApplyTemplateMostSpecificTemplate(t *testing.T) {
+	p, err := NewGraphiteParser(
+		".",
+		[]string{
+			"measurement.host.metric",
+			"measurement.host.metric.metric.metric",
+			"measurement.host.metric.metric",
+		},
+		nil,
+	)
+	assert.NoError(t, err)
+
+	measurement, tags, _, err := p.ApplyTemplate("net.server001.a.b.c 2")
+	assert.Equal(t, "net", measurement)
+	assert.Equal(t,
+		map[string]string{"host": "server001", "metric": "a.b.c"},
+		tags)
+
+	measurement, tags, _, err = p.ApplyTemplate("net.server001.a.b 2")
+	assert.Equal(t, "net", measurement)
+	assert.Equal(t,
+		map[string]string{"host": "server001", "metric": "a.b"},
+		tags)
 }
 
 // Test Helpers

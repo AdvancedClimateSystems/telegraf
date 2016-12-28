@@ -1,9 +1,12 @@
 package exec
 
 import (
+	"bytes"
 	"fmt"
+	"runtime"
 	"testing"
 
+	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/plugins/parsers"
 
 	"github.com/influxdata/telegraf/testutil"
@@ -33,7 +36,7 @@ const malformedJson = `
     "status": "green",
 `
 
-const lineProtocol = "cpu,host=foo,datacenter=us-east usage_idle=99,usage_busy=1"
+const lineProtocol = "cpu,host=foo,datacenter=us-east usage_idle=99,usage_busy=1\n"
 
 const lineProtocolMulti = `
 cpu,cpu=cpu0,host=foo,datacenter=us-east usage_idle=99,usage_busy=1
@@ -44,6 +47,29 @@ cpu,cpu=cpu4,host=foo,datacenter=us-east usage_idle=99,usage_busy=1
 cpu,cpu=cpu5,host=foo,datacenter=us-east usage_idle=99,usage_busy=1
 cpu,cpu=cpu6,host=foo,datacenter=us-east usage_idle=99,usage_busy=1
 `
+
+type CarriageReturnTest struct {
+	input  []byte
+	output []byte
+}
+
+var crTests = []CarriageReturnTest{
+	{[]byte{0x4c, 0x69, 0x6e, 0x65, 0x20, 0x31, 0x0d, 0x0a, 0x4c, 0x69,
+		0x6e, 0x65, 0x20, 0x32, 0x0d, 0x0a, 0x4c, 0x69, 0x6e, 0x65,
+		0x20, 0x33},
+		[]byte{0x4c, 0x69, 0x6e, 0x65, 0x20, 0x31, 0x0a, 0x4c, 0x69, 0x6e,
+			0x65, 0x20, 0x32, 0x0a, 0x4c, 0x69, 0x6e, 0x65, 0x20, 0x33}},
+	{[]byte{0x4c, 0x69, 0x6e, 0x65, 0x20, 0x31, 0x0a, 0x4c, 0x69, 0x6e,
+		0x65, 0x20, 0x32, 0x0a, 0x4c, 0x69, 0x6e, 0x65, 0x20, 0x33},
+		[]byte{0x4c, 0x69, 0x6e, 0x65, 0x20, 0x31, 0x0a, 0x4c, 0x69, 0x6e,
+			0x65, 0x20, 0x32, 0x0a, 0x4c, 0x69, 0x6e, 0x65, 0x20, 0x33}},
+	{[]byte{0x54, 0x68, 0x69, 0x73, 0x20, 0x69, 0x73, 0x20, 0x61, 0x6c,
+		0x6c, 0x20, 0x6f, 0x6e, 0x65, 0x20, 0x62, 0x69, 0x67, 0x20,
+		0x6c, 0x69, 0x6e, 0x65},
+		[]byte{0x54, 0x68, 0x69, 0x73, 0x20, 0x69, 0x73, 0x20, 0x61, 0x6c,
+			0x6c, 0x20, 0x6f, 0x6e, 0x65, 0x20, 0x62, 0x69, 0x67, 0x20,
+			0x6c, 0x69, 0x6e, 0x65}},
+}
 
 type runnerMock struct {
 	out []byte
@@ -57,7 +83,7 @@ func newRunnerMock(out []byte, err error) Runner {
 	}
 }
 
-func (r runnerMock) Run(e *Exec, command string) ([]byte, error) {
+func (r runnerMock) Run(e *Exec, command string, acc telegraf.Accumulator) ([]byte, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -166,5 +192,71 @@ func TestLineProtocolParseMultiple(t *testing.T) {
 	for _, cpu := range cpuTags {
 		tags["cpu"] = cpu
 		acc.AssertContainsTaggedFields(t, "cpu", fields, tags)
+	}
+}
+
+func TestExecCommandWithGlob(t *testing.T) {
+	parser, _ := parsers.NewValueParser("metric", "string", nil)
+	e := NewExec()
+	e.Commands = []string{"/bin/ech* metric_value"}
+	e.SetParser(parser)
+
+	var acc testutil.Accumulator
+	err := e.Gather(&acc)
+	require.NoError(t, err)
+
+	fields := map[string]interface{}{
+		"value": "metric_value",
+	}
+	acc.AssertContainsFields(t, "metric", fields)
+}
+
+func TestExecCommandWithoutGlob(t *testing.T) {
+	parser, _ := parsers.NewValueParser("metric", "string", nil)
+	e := NewExec()
+	e.Commands = []string{"/bin/echo metric_value"}
+	e.SetParser(parser)
+
+	var acc testutil.Accumulator
+	err := e.Gather(&acc)
+	require.NoError(t, err)
+
+	fields := map[string]interface{}{
+		"value": "metric_value",
+	}
+	acc.AssertContainsFields(t, "metric", fields)
+}
+
+func TestExecCommandWithoutGlobAndPath(t *testing.T) {
+	parser, _ := parsers.NewValueParser("metric", "string", nil)
+	e := NewExec()
+	e.Commands = []string{"echo metric_value"}
+	e.SetParser(parser)
+
+	var acc testutil.Accumulator
+	err := e.Gather(&acc)
+	require.NoError(t, err)
+
+	fields := map[string]interface{}{
+		"value": "metric_value",
+	}
+	acc.AssertContainsFields(t, "metric", fields)
+}
+
+func TestRemoveCarriageReturns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Test that all carriage returns are removed
+		for _, test := range crTests {
+			b := bytes.NewBuffer(test.input)
+			out := removeCarriageReturns(*b)
+			assert.True(t, bytes.Equal(test.output, out.Bytes()))
+		}
+	} else {
+		// Test that the buffer is returned unaltered
+		for _, test := range crTests {
+			b := bytes.NewBuffer(test.input)
+			out := removeCarriageReturns(*b)
+			assert.True(t, bytes.Equal(test.input, out.Bytes()))
+		}
 	}
 }

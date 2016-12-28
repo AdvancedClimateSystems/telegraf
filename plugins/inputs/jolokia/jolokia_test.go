@@ -12,6 +12,37 @@ import (
 	_ "github.com/stretchr/testify/require"
 )
 
+const validThreeLevelMultiValueJSON = `
+{
+  "request":{
+    "mbean":"java.lang:type=*",
+    "type":"read"
+  },
+  "value":{
+		"java.lang:type=Memory":{
+			"ObjectPendingFinalizationCount":0,
+			"Verbose":false,
+			"HeapMemoryUsage":{
+				"init":134217728,
+				"committed":173015040,
+				"max":1908932608,
+				"used":16840016
+			},
+			"NonHeapMemoryUsage":{
+				"init":2555904,
+				"committed":51380224,
+				"max":-1,
+				"used":49944048
+			},
+			"ObjectName":{
+				"objectName":"java.lang:type=Memory"
+			}
+		}
+  },
+  "timestamp":1446129191,
+  "status":200
+}`
+
 const validMultiValueJSON = `
 {
   "request":{
@@ -47,8 +78,10 @@ const invalidJSON = "I don't think this is JSON"
 const empty = ""
 
 var Servers = []Server{Server{Name: "as1", Host: "127.0.0.1", Port: "8080"}}
-var HeapMetric = Metric{Name: "heap_memory_usage", Jmx: "/java.lang:type=Memory/HeapMemoryUsage"}
-var UsedHeapMetric = Metric{Name: "heap_memory_usage", Jmx: "/java.lang:type=Memory/HeapMemoryUsage"}
+var HeapMetric = Metric{Name: "heap_memory_usage",
+	Mbean: "java.lang:type=Memory", Attribute: "HeapMemoryUsage"}
+var UsedHeapMetric = Metric{Name: "heap_memory_usage",
+	Mbean: "java.lang:type=Memory", Attribute: "HeapMemoryUsage"}
 
 type jolokiaClientStub struct {
 	responseBody string
@@ -94,9 +127,41 @@ func TestHttpJsonMultiValue(t *testing.T) {
 		"heap_memory_usage_used":      203288528.0,
 	}
 	tags := map[string]string{
-		"host":   "127.0.0.1",
-		"port":   "8080",
-		"server": "as1",
+		"jolokia_host": "127.0.0.1",
+		"jolokia_port": "8080",
+		"jolokia_name": "as1",
+	}
+	acc.AssertContainsTaggedFields(t, "jolokia", fields, tags)
+}
+
+// Test that the proper values are ignored or collected
+func TestHttpJsonThreeLevelMultiValue(t *testing.T) {
+	jolokia := genJolokiaClientStub(validThreeLevelMultiValueJSON, 200, Servers, []Metric{HeapMetric})
+
+	var acc testutil.Accumulator
+	err := jolokia.Gather(&acc)
+
+	assert.Nil(t, err)
+	assert.Equal(t, 1, len(acc.Metrics))
+
+	fields := map[string]interface{}{
+		"heap_memory_usage_java.lang:type=Memory_ObjectPendingFinalizationCount": 0.0,
+		"heap_memory_usage_java.lang:type=Memory_Verbose":                        false,
+		"heap_memory_usage_java.lang:type=Memory_HeapMemoryUsage_init":           134217728.0,
+		"heap_memory_usage_java.lang:type=Memory_HeapMemoryUsage_max":            1908932608.0,
+		"heap_memory_usage_java.lang:type=Memory_HeapMemoryUsage_used":           16840016.0,
+		"heap_memory_usage_java.lang:type=Memory_HeapMemoryUsage_committed":      173015040.0,
+		"heap_memory_usage_java.lang:type=Memory_NonHeapMemoryUsage_init":        2555904.0,
+		"heap_memory_usage_java.lang:type=Memory_NonHeapMemoryUsage_committed":   51380224.0,
+		"heap_memory_usage_java.lang:type=Memory_NonHeapMemoryUsage_max":         -1.0,
+		"heap_memory_usage_java.lang:type=Memory_NonHeapMemoryUsage_used":        49944048.0,
+		"heap_memory_usage_java.lang:type=Memory_ObjectName_objectName":          "java.lang:type=Memory",
+	}
+
+	tags := map[string]string{
+		"jolokia_host": "127.0.0.1",
+		"jolokia_port": "8080",
+		"jolokia_name": "as1",
 	}
 	acc.AssertContainsTaggedFields(t, "jolokia", fields, tags)
 }
@@ -105,6 +170,20 @@ func TestHttpJsonMultiValue(t *testing.T) {
 func TestHttpJsonOn404(t *testing.T) {
 
 	jolokia := genJolokiaClientStub(validMultiValueJSON, 404, Servers,
+		[]Metric{UsedHeapMetric})
+
+	var acc testutil.Accumulator
+	acc.SetDebug(true)
+	err := jolokia.Gather(&acc)
+
+	assert.Nil(t, err)
+	assert.Equal(t, 0, len(acc.Metrics))
+}
+
+// Test that the proper values are ignored or collected
+func TestHttpInvalidJson(t *testing.T) {
+
+	jolokia := genJolokiaClientStub(invalidJSON, 200, Servers,
 		[]Metric{UsedHeapMetric})
 
 	var acc testutil.Accumulator

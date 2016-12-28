@@ -48,23 +48,25 @@ ping: -i interval too short: Operation not permitted
 
 // Test that ping command output is processed properly
 func TestProcessPingOutput(t *testing.T) {
-	trans, rec, avg, err := processPingOutput(bsdPingOutput)
+	trans, rec, avg, stddev, err := processPingOutput(bsdPingOutput)
 	assert.NoError(t, err)
 	assert.Equal(t, 5, trans, "5 packets were transmitted")
 	assert.Equal(t, 5, rec, "5 packets were transmitted")
 	assert.InDelta(t, 20.224, avg, 0.001)
+	assert.InDelta(t, 4.076, stddev, 0.001)
 
-	trans, rec, avg, err = processPingOutput(linuxPingOutput)
+	trans, rec, avg, stddev, err = processPingOutput(linuxPingOutput)
 	assert.NoError(t, err)
 	assert.Equal(t, 5, trans, "5 packets were transmitted")
 	assert.Equal(t, 5, rec, "5 packets were transmitted")
 	assert.InDelta(t, 43.628, avg, 0.001)
+	assert.InDelta(t, 5.325, stddev, 0.001)
 }
 
 // Test that processPingOutput returns an error when 'ping' fails to run, such
 // as when an invalid argument is provided
 func TestErrorProcessPingOutput(t *testing.T) {
-	_, _, _, err := processPingOutput(fatalPingOutput)
+	_, _, _, _, err := processPingOutput(fatalPingOutput)
 	assert.Error(t, err, "Error was expected from processPingOutput")
 }
 
@@ -95,7 +97,10 @@ func TestArgs(t *testing.T) {
 	p.Timeout = 12.0
 	actual = p.args("www.google.com")
 	switch runtime.GOOS {
-	case "darwin", "freebsd":
+	case "darwin":
+		expected = []string{"-c", "2", "-n", "-s", "16", "-I", "eth0", "-W",
+			"12000.0", "www.google.com"}
+	case "freebsd":
 		expected = []string{"-c", "2", "-n", "-s", "16", "-I", "eth0", "-t",
 			"12.0", "www.google.com"}
 	default:
@@ -111,7 +116,10 @@ func TestArgs(t *testing.T) {
 	p.PingInterval = 1.2
 	actual = p.args("www.google.com")
 	switch runtime.GOOS {
-	case "darwin", "freebsd":
+	case "darwin":
+		expected = []string{"-c", "2", "-n", "-s", "16", "-I", "eth0", "-W",
+			"12000.0", "-i", "1.2", "www.google.com"}
+	case "freebsd":
 		expected = []string{"-c", "2", "-n", "-s", "16", "-I", "eth0", "-t",
 			"12.0", "-i", "1.2", "www.google.com"}
 	default:
@@ -124,7 +132,7 @@ func TestArgs(t *testing.T) {
 		"Expected: %s Actual: %s", expected, actual)
 }
 
-func mockHostPinger(args ...string) (string, error) {
+func mockHostPinger(timeout float64, args ...string) (string, error) {
 	return linuxPingOutput, nil
 }
 
@@ -139,10 +147,11 @@ func TestPingGather(t *testing.T) {
 	p.Gather(&acc)
 	tags := map[string]string{"url": "www.google.com"}
 	fields := map[string]interface{}{
-		"packets_transmitted": 5,
-		"packets_received":    5,
-		"percent_packet_loss": 0.0,
-		"average_response_ms": 43.628,
+		"packets_transmitted":   5,
+		"packets_received":      5,
+		"percent_packet_loss":   0.0,
+		"average_response_ms":   43.628,
+		"standard_deviation_ms": 5.325,
 	}
 	acc.AssertContainsTaggedFields(t, "ping", fields, tags)
 
@@ -161,7 +170,7 @@ PING www.google.com (216.58.218.164) 56(84) bytes of data.
 rtt min/avg/max/mdev = 35.225/44.033/51.806/5.325 ms
 `
 
-func mockLossyHostPinger(args ...string) (string, error) {
+func mockLossyHostPinger(timeout float64, args ...string) (string, error) {
 	return lossyPingOutput, nil
 }
 
@@ -176,10 +185,11 @@ func TestLossyPingGather(t *testing.T) {
 	p.Gather(&acc)
 	tags := map[string]string{"url": "www.google.com"}
 	fields := map[string]interface{}{
-		"packets_transmitted": 5,
-		"packets_received":    3,
-		"percent_packet_loss": 40.0,
-		"average_response_ms": 44.033,
+		"packets_transmitted":   5,
+		"packets_received":      3,
+		"percent_packet_loss":   40.0,
+		"average_response_ms":   44.033,
+		"standard_deviation_ms": 5.325,
 	}
 	acc.AssertContainsTaggedFields(t, "ping", fields, tags)
 }
@@ -192,7 +202,7 @@ Request timeout for icmp_seq 0
 2 packets transmitted, 0 packets received, 100.0% packet loss
 `
 
-func mockErrorHostPinger(args ...string) (string, error) {
+func mockErrorHostPinger(timeout float64, args ...string) (string, error) {
 	return errorPingOutput, errors.New("No packets received")
 }
 
@@ -215,7 +225,7 @@ func TestBadPingGather(t *testing.T) {
 	acc.AssertContainsTaggedFields(t, "ping", fields, tags)
 }
 
-func mockFatalHostPinger(args ...string) (string, error) {
+func mockFatalHostPinger(timeout float64, args ...string) (string, error) {
 	return fatalPingOutput, errors.New("So very bad")
 }
 

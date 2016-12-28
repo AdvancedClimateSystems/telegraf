@@ -5,7 +5,9 @@ import (
 	"regexp"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/influxdata/telegraf/internal"
 	"github.com/influxdata/telegraf/testutil"
 
 	"github.com/stretchr/testify/assert"
@@ -35,7 +37,7 @@ func TestTCPError(t *testing.T) {
 	// Error
 	err1 := c.Gather(&acc)
 	require.Error(t, err1)
-	assert.Equal(t, "dial tcp 127.0.0.1:9999: getsockopt: connection refused", err1.Error())
+	assert.Contains(t, err1.Error(), "getsockopt: connection refused")
 }
 
 func TestTCPOK1(t *testing.T) {
@@ -46,8 +48,8 @@ func TestTCPOK1(t *testing.T) {
 		Address:     "127.0.0.1:2004",
 		Send:        "test",
 		Expect:      "test",
-		ReadTimeout: 3.0,
-		Timeout:     1.0,
+		ReadTimeout: internal.Duration{Duration: time.Second * 3},
+		Timeout:     internal.Duration{Duration: time.Second},
 		Protocol:    "tcp",
 	}
 	// Start TCP server
@@ -69,7 +71,7 @@ func TestTCPOK1(t *testing.T) {
 			"string_found":  true,
 			"response_time": 1.0,
 		},
-		map[string]string{"host": "127.0.0.1",
+		map[string]string{"server": "127.0.0.1",
 			"port":     "2004",
 			"protocol": "tcp",
 		},
@@ -86,8 +88,8 @@ func TestTCPOK2(t *testing.T) {
 		Address:     "127.0.0.1:2004",
 		Send:        "test",
 		Expect:      "test2",
-		ReadTimeout: 3.0,
-		Timeout:     1.0,
+		ReadTimeout: internal.Duration{Duration: time.Second * 3},
+		Timeout:     internal.Duration{Duration: time.Second},
 		Protocol:    "tcp",
 	}
 	// Start TCP server
@@ -109,7 +111,7 @@ func TestTCPOK2(t *testing.T) {
 			"string_found":  false,
 			"response_time": 1.0,
 		},
-		map[string]string{"host": "127.0.0.1",
+		map[string]string{"server": "127.0.0.1",
 			"port":     "2004",
 			"protocol": "tcp",
 		},
@@ -141,8 +143,8 @@ func TestUDPOK1(t *testing.T) {
 		Address:     "127.0.0.1:2004",
 		Send:        "test",
 		Expect:      "test",
-		ReadTimeout: 3.0,
-		Timeout:     1.0,
+		ReadTimeout: internal.Duration{Duration: time.Second * 3},
+		Timeout:     internal.Duration{Duration: time.Second},
 		Protocol:    "udp",
 	}
 	// Start UDP server
@@ -164,7 +166,7 @@ func TestUDPOK1(t *testing.T) {
 			"string_found":  true,
 			"response_time": 1.0,
 		},
-		map[string]string{"host": "127.0.0.1",
+		map[string]string{"server": "127.0.0.1",
 			"port":     "2004",
 			"protocol": "udp",
 		},

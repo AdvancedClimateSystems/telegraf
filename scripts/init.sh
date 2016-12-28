@@ -138,7 +138,7 @@ case $1 in
         if which start-stop-daemon > /dev/null 2>&1; then
             start-stop-daemon --chuid $USER:$GROUP --start --quiet --pidfile $pidfile --exec $daemon -- -pidfile $pidfile -config $config -config-directory $confdir $TELEGRAF_OPTS >>$STDOUT 2>>$STDERR &
         else
-            nohup $daemon -pidfile $pidfile -config $config -config-directory $confdir $TELEGRAF_OPTS >>$STDOUT 2>>$STDERR &
+            su -s /bin/sh -c "nohup $daemon -pidfile $pidfile -config $config -config-directory $confdir $TELEGRAF_OPTS >>$STDOUT 2>>$STDERR &" $USER
         fi
         log_success_msg "$name process was started"
         ;;
@@ -152,6 +152,22 @@ case $1 in
                     log_success_msg "$name process was stopped"
                 else
                     log_failure_msg "$name failed to stop service"
+                fi
+            fi
+        else
+            log_failure_msg "$name process is not running"
+        fi
+        ;;
+
+    reload)
+        # Reload the daemon.
+        if [ -e $pidfile ]; then
+            pidofproc -p $pidfile $daemon > /dev/null 2>&1 && status="0" || status="$?"
+            if [ "$status" = 0 ]; then
+                if killproc -p $pidfile SIGHUP; then
+                    log_success_msg "$name process was reloaded"
+                else
+                    log_failure_msg "$name failed to reload service"
                 fi
             fi
         else

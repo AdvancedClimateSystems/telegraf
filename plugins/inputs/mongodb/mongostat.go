@@ -28,8 +28,15 @@ const (
 	WTOnly               // only active if node has wiredtiger-specific fields
 )
 
+type MongoStatus struct {
+	SampleTime    time.Time
+	ServerStatus  *ServerStatus
+	ReplSetStatus *ReplSetStatus
+	ClusterStatus *ClusterStatus
+	DbStats       *DbStats
+}
+
 type ServerStatus struct {
-	SampleTime         time.Time              `bson:""`
 	Host               string                 `bson:"host"`
 	Version            string                 `bson:"version"`
 	Process            string                 `bson:"process"`
@@ -54,6 +61,52 @@ type ServerStatus struct {
 	ShardCursorType    map[string]interface{} `bson:"shardCursorType"`
 	StorageEngine      map[string]string      `bson:"storageEngine"`
 	WiredTiger         *WiredTiger            `bson:"wiredTiger"`
+	Metrics            *MetricsStats          `bson:"metrics"`
+}
+
+// DbStats stores stats from all dbs
+type DbStats struct {
+	Dbs []Db
+}
+
+// Db represent a single DB
+type Db struct {
+	Name        string
+	DbStatsData *DbStatsData
+}
+
+// DbStatsData stores stats from a db
+type DbStatsData struct {
+	Db          string      `bson:"db"`
+	Collections int64       `bson:"collections"`
+	Objects     int64       `bson:"objects"`
+	AvgObjSize  float64     `bson:"avgObjSize"`
+	DataSize    int64       `bson:"dataSize"`
+	StorageSize int64       `bson:"storageSize"`
+	NumExtents  int64       `bson:"numExtents"`
+	Indexes     int64       `bson:"indexes"`
+	IndexSize   int64       `bson:"indexSize"`
+	Ok          int64       `bson:"ok"`
+	GleStats    interface{} `bson:"gleStats"`
+}
+
+// ClusterStatus stores information related to the whole cluster
+type ClusterStatus struct {
+	JumboChunksCount int64
+}
+
+// ReplSetStatus stores information from replSetGetStatus
+type ReplSetStatus struct {
+	Members []ReplSetMember `bson:"members"`
+	MyState int64           `bson:"myState"`
+}
+
+// ReplSetMember stores information related to a replica set member
+type ReplSetMember struct {
+	Name       string    `bson:"name"`
+	State      int64     `bson:"state"`
+	StateStr   string    `bson:"stateStr"`
+	OptimeDate time.Time `bson:"optimeDate"`
 }
 
 // WiredTiger stores information related to the WiredTiger storage engine.
@@ -194,6 +247,17 @@ type OpcountStats struct {
 	Command int64 `bson:"command"`
 }
 
+// MetricsStats stores information related to metrics
+type MetricsStats struct {
+	TTL *TTLStats `bson:"ttl"`
+}
+
+// TTLStats stores information related to documents with a ttl index.
+type TTLStats struct {
+	DeletedDocuments int64 `bson:"deletedDocuments"`
+	Passes           int64 `bson:"passes"`
+}
+
 // ReadWriteLockTimes stores time spent holding read/write locks.
 type ReadWriteLockTimes struct {
 	Read       int64 `bson:"R"`
@@ -332,6 +396,9 @@ type StatLine struct {
 	// Opcounter fields
 	Insert, Query, Update, Delete, GetMore, Command int64
 
+	// TTL fields
+	Passes, DeletedDocuments int64
+
 	// Collection locks (3.0 mmap only)
 	CollectionLocks *CollectionLockStatus
 
@@ -341,6 +408,7 @@ type StatLine struct {
 
 	// Replicated Opcounter fields
 	InsertR, QueryR, UpdateR, DeleteR, GetMoreR, CommandR int64
+	ReplLag                                               int64
 	Flushes                                               int64
 	Mapped, Virtual, Resident, NonMapped                  int64
 	Faults                                                int64
@@ -351,6 +419,26 @@ type StatLine struct {
 	NumConnections                                        int64
 	ReplSetName                                           string
 	NodeType                                              string
+	NodeState                                             string
+
+	// Cluster fields
+	JumboChunksCount int64
+
+	// DB stats field
+	DbStatsLines []DbStatLine
+}
+
+type DbStatLine struct {
+	Name        string
+	Collections int64
+	Objects     int64
+	AvgObjSize  float64
+	DataSize    int64
+	StorageSize int64
+	NumExtents  int64
+	Indexes     int64
+	IndexSize   int64
+	Ok          int64
 }
 
 func parseLocks(stat ServerStatus) map[string]LockUsage {
@@ -395,8 +483,11 @@ func diff(newVal, oldVal, sampleTime int64) int64 {
 	return d / sampleTime
 }
 
-// NewStatLine constructs a StatLine object from two ServerStatus objects.
-func NewStatLine(oldStat, newStat ServerStatus, key string, all bool, sampleSecs int64) *StatLine {
+// NewStatLine constructs a StatLine object from two MongoStatus objects.
+func NewStatLine(oldMongo, newMongo MongoStatus, key string, all bool, sampleSecs int64) *StatLine {
+	oldStat := *oldMongo.ServerStatus
+	newStat := *newMongo.ServerStatus
+
 	returnVal := &StatLine{
 		Key:       key,
 		Host:      newStat.Host,
@@ -423,6 +514,11 @@ func NewStatLine(oldStat, newStat ServerStatus, key string, all bool, sampleSecs
 		returnVal.Command = diff(newStat.Opcounters.Command, oldStat.Opcounters.Command, sampleSecs)
 	}
 
+	if newStat.Metrics != nil && newStat.Metrics.TTL != nil && oldStat.Metrics.TTL != nil {
+		returnVal.Passes = diff(newStat.Metrics.TTL.Passes, oldStat.Metrics.TTL.Passes, sampleSecs)
+		returnVal.DeletedDocuments = diff(newStat.Metrics.TTL.DeletedDocuments, oldStat.Metrics.TTL.DeletedDocuments, sampleSecs)
+	}
+
 	if newStat.OpcountersRepl != nil && oldStat.OpcountersRepl != nil {
 		returnVal.InsertR = diff(newStat.OpcountersRepl.Insert, oldStat.OpcountersRepl.Insert, sampleSecs)
 		returnVal.QueryR = diff(newStat.OpcountersRepl.Query, oldStat.OpcountersRepl.Query, sampleSecs)
@@ -442,7 +538,7 @@ func NewStatLine(oldStat, newStat ServerStatus, key string, all bool, sampleSecs
 		returnVal.Flushes = newStat.BackgroundFlushing.Flushes - oldStat.BackgroundFlushing.Flushes
 	}
 
-	returnVal.Time = newStat.SampleTime
+	returnVal.Time = newMongo.SampleTime
 	returnVal.IsMongos =
 		(newStat.ShardCursorType != nil || strings.HasPrefix(newStat.Process, MongosProcess))
 
@@ -470,6 +566,8 @@ func NewStatLine(oldStat, newStat ServerStatus, key string, all bool, sampleSecs
 			returnVal.NodeType = "PRI"
 		} else if newStat.Repl.Secondary.(bool) {
 			returnVal.NodeType = "SEC"
+		} else if newStat.Repl.ArbiterOnly != nil && newStat.Repl.ArbiterOnly.(bool) {
+			returnVal.NodeType = "ARB"
 		} else {
 			returnVal.NodeType = "UNK"
 		}
@@ -585,6 +683,67 @@ func NewStatLine(oldStat, newStat ServerStatus, key string, all bool, sampleSecs
 
 	if newStat.Connections != nil {
 		returnVal.NumConnections = newStat.Connections.Current
+	}
+
+	newReplStat := *newMongo.ReplSetStatus
+
+	if newReplStat.Members != nil {
+		myName := newStat.Repl.Me
+		// Find the master and myself
+		master := ReplSetMember{}
+		me := ReplSetMember{}
+		for _, member := range newReplStat.Members {
+			if member.Name == myName {
+				// Store my state string
+				returnVal.NodeState = member.StateStr
+				if member.State == 1 {
+					// I'm the master
+					returnVal.ReplLag = 0
+					break
+				} else {
+					// I'm secondary
+					me = member
+				}
+			} else if member.State == 1 {
+				// Master found
+				master = member
+			}
+		}
+
+		if me.State == 2 {
+			// OptimeDate.Unix() type is int64
+			lag := master.OptimeDate.Unix() - me.OptimeDate.Unix()
+			if lag < 0 {
+				returnVal.ReplLag = 0
+			} else {
+				returnVal.ReplLag = lag
+			}
+		}
+	}
+
+	newClusterStat := *newMongo.ClusterStatus
+	returnVal.JumboChunksCount = newClusterStat.JumboChunksCount
+
+	newDbStats := *newMongo.DbStats
+	for _, db := range newDbStats.Dbs {
+		dbStatsData := db.DbStatsData
+		// mongos doesn't have the db key, so setting the db name
+		if dbStatsData.Db == "" {
+			dbStatsData.Db = db.Name
+		}
+		dbStatLine := &DbStatLine{
+			Name:        dbStatsData.Db,
+			Collections: dbStatsData.Collections,
+			Objects:     dbStatsData.Objects,
+			AvgObjSize:  dbStatsData.AvgObjSize,
+			DataSize:    dbStatsData.DataSize,
+			StorageSize: dbStatsData.StorageSize,
+			NumExtents:  dbStatsData.NumExtents,
+			Indexes:     dbStatsData.Indexes,
+			IndexSize:   dbStatsData.IndexSize,
+			Ok:          dbStatsData.Ok,
+		}
+		returnVal.DbStatsLines = append(returnVal.DbStatsLines, *dbStatLine)
 	}
 
 	return returnVal

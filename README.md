@@ -1,15 +1,23 @@
-# Telegraf [![Circle CI](https://circleci.com/gh/influxdata/telegraf.svg?style=svg)](https://circleci.com/gh/influxdata/telegraf)
+# Telegraf [![Circle CI](https://circleci.com/gh/influxdata/telegraf.svg?style=svg)](https://circleci.com/gh/influxdata/telegraf) [![Docker pulls](https://img.shields.io/docker/pulls/library/telegraf.svg)](https://hub.docker.com/_/telegraf/)
 
-Telegraf is an agent written in Go for collecting metrics from the system it's
-running on, or from other services, and writing them into InfluxDB or other
-[outputs](https://github.com/influxdata/telegraf#supported-output-plugins).
+Telegraf is an agent written in Go for collecting, processing, aggregating,
+and writing metrics.
 
 Design goals are to have a minimal memory footprint with a plugin system so
 that developers in the community can easily add support for collecting metrics
 from well known services (like Hadoop, Postgres, or Redis) and third party
 APIs (like Mailchimp, AWS CloudWatch, or Google Analytics).
 
-New input and output plugins are designed to be easy to contribute,
+Telegraf is plugin-driven and has the concept of 4 distinct plugins:
+
+1. [Input Plugins](#input-plugins) collect metrics from the system, services, or 3rd party APIs
+2. [Processor Plugins](#processor-plugins) transform, decorate, and/or filter metrics
+3. [Aggregator Plugins](#aggregator-plugins) create aggregate metrics (e.g. mean, min, max, quantiles, etc.)
+4. [Output Plugins](#output-plugins) write metrics to various destinations
+
+For more information on Processor and Aggregator plugins please [read this](./docs/AGGREGATORS_AND_PROCESSORS.md).
+
+New plugins are designed to be easy to contribute,
 we'll eagerly accept pull
 requests and will manage the set of plugins that Telegraf supports.
 See the [contributing guide](CONTRIBUTING.md) for instructions on writing
@@ -17,26 +25,15 @@ new plugins.
 
 ## Installation:
 
-NOTE: Telegraf 0.10.x is **not** backwards-compatible with previous versions
-of telegraf, both in the database layout and the configuration file. 0.2.x
-will continue to be supported, see below for download links.
-
-For more details on the differences between Telegraf 0.2.x and 0.10.x, see
-the [release blog post](https://influxdata.com/blog/announcing-telegraf-0-10-0/).
-
 ### Linux deb and rpm Packages:
 
 Latest:
-* http://get.influxdb.org/telegraf/telegraf_0.10.4.1-1_amd64.deb
-* http://get.influxdb.org/telegraf/telegraf-0.10.4.1-1.x86_64.rpm
+* https://dl.influxdata.com/telegraf/releases/telegraf_1.1.1_amd64.deb
+* https://dl.influxdata.com/telegraf/releases/telegraf-1.1.1.x86_64.rpm
 
 Latest (arm):
-* http://get.influxdb.org/telegraf/telegraf_0.10.4.1-1_arm.deb
-* http://get.influxdb.org/telegraf/telegraf-0.10.4.1-1.arm.rpm
-
-0.2.x:
-* http://get.influxdb.org/telegraf/telegraf_0.2.4_amd64.deb
-* http://get.influxdb.org/telegraf/telegraf-0.2.4-1.x86_64.rpm
+* https://dl.influxdata.com/telegraf/releases/telegraf_1.1.1_armhf.deb
+* https://dl.influxdata.com/telegraf/releases/telegraf-1.1.1.armhf.rpm
 
 ##### Package Instructions:
 
@@ -50,34 +47,21 @@ controlled via `systemctl [action] telegraf`
 ### yum/apt Repositories:
 
 There is a yum/apt repo available for the whole InfluxData stack, see
-[here](https://docs.influxdata.com/influxdb/v0.9/introduction/installation/#installation)
-for instructions, replacing the `influxdb` package name with `telegraf`.
+[here](https://docs.influxdata.com/influxdb/latest/introduction/installation/#installation)
+for instructions on setting up the repo. Once it is configured, you will be able
+to use this repo to install & update telegraf.
 
 ### Linux tarballs:
 
 Latest:
-* http://get.influxdb.org/telegraf/telegraf-0.10.4.1-1_linux_amd64.tar.gz
-* http://get.influxdb.org/telegraf/telegraf-0.10.4.1-1_linux_i386.tar.gz
-* http://get.influxdb.org/telegraf/telegraf-0.10.4.1-1_linux_arm.tar.gz
+* https://dl.influxdata.com/telegraf/releases/telegraf-1.1.1_linux_amd64.tar.gz
+* https://dl.influxdata.com/telegraf/releases/telegraf-1.1.1_linux_i386.tar.gz
+* https://dl.influxdata.com/telegraf/releases/telegraf-1.1.1_linux_armhf.tar.gz
 
-0.2.x:
-* http://get.influxdb.org/telegraf/telegraf_linux_amd64_0.2.4.tar.gz
-* http://get.influxdb.org/telegraf/telegraf_linux_386_0.2.4.tar.gz
-* http://get.influxdb.org/telegraf/telegraf_linux_arm_0.2.4.tar.gz
+### FreeBSD tarball:
 
-##### tarball Instructions:
-
-To install the full directory structure with config file, run:
-
-```
-sudo tar -C / -zxvf ./telegraf-0.10.4.1-1_linux_amd64.tar.gz
-```
-
-To extract only the binary, run:
-
-```
-tar -zxvf telegraf-0.10.4.1-1_linux_amd64.tar.gz --strip-components=3 ./usr/bin/telegraf
-```
+Latest:
+* https://dl.influxdata.com/telegraf/releases/telegraf-1.1.1_freebsd_amd64.tar.gz
 
 ### Ansible Role:
 
@@ -93,8 +77,7 @@ brew install telegraf
 ### Windows Binaries (EXPERIMENTAL)
 
 Latest:
-* http://get.influxdb.org/telegraf/telegraf-0.10.4.1-1_windows_amd64.zip
-* http://get.influxdb.org/telegraf/telegraf-0.10.4.1-1_windows_i386.zip
+* https://dl.influxdata.com/telegraf/releases/telegraf-1.1.1_windows_amd64.zip
 
 ### From Source:
 
@@ -110,103 +93,114 @@ if you don't have it already. You also must build with golang version 1.5+.
 
 ## How to use it:
 
-```console
-$ telegraf -help
-Telegraf, The plugin-driven server agent for collecting and reporting metrics.
+See usage with:
 
-Usage:
-
-  telegraf <flags>
-
-The flags are:
-
-  -config <file>     configuration file to load
-  -test              gather metrics once, print them to stdout, and exit
-  -sample-config     print out full sample configuration to stdout
-  -config-directory  directory containing additional *.conf files
-  -input-filter      filter the input plugins to enable, separator is :
-  -output-filter     filter the output plugins to enable, separator is :
-  -usage             print usage for a plugin, ie, 'telegraf -usage mysql'
-  -debug             print metrics as they're generated to stdout
-  -quiet             run in quiet mode
-  -version           print the version to stdout
-
-Examples:
-
-  # generate a telegraf config file:
-  telegraf -sample-config > telegraf.conf
-
-  # generate config with only cpu input & influxdb output plugins defined
-  telegraf -sample-config -input-filter cpu -output-filter influxdb
-
-  # run a single telegraf collection, outputing metrics to stdout
-  telegraf -config telegraf.conf -test
-
-  # run telegraf with all plugins defined in config file
-  telegraf -config telegraf.conf
-
-  # run telegraf, enabling the cpu & memory input, and influxdb output plugins
-  telegraf -config telegraf.conf -input-filter cpu:mem -output-filter influxdb
 ```
+telegraf --help
+```
+
+### Generate a telegraf config file:
+
+```
+telegraf config > telegraf.conf
+```
+
+### Generate config with only cpu input & influxdb output plugins defined
+
+```
+telegraf --input-filter cpu --output-filter influxdb config
+```
+
+### Run a single telegraf collection, outputing metrics to stdout
+
+```
+telegraf --config telegraf.conf -test
+```
+
+### Run telegraf with all plugins defined in config file
+
+```
+telegraf --config telegraf.conf
+```
+
+### Run telegraf, enabling the cpu & memory input, and influxdb output plugins
+
+```
+telegraf --config telegraf.conf -input-filter cpu:mem -output-filter influxdb
+```
+
 
 ## Configuration
 
 See the [configuration guide](docs/CONFIGURATION.md) for a rundown of the more advanced
 configuration options.
 
-## Supported Input Plugins
+## Input Plugins
 
-Telegraf currently has support for collecting metrics from many sources. For
-more information on each, please look at the directory of the same name in
-`plugins/inputs`.
-
-Currently implemented sources:
-
-* aerospike
-* apache
-* bcache
-* couchdb
-* disque
-* dns query time
-* docker
-* dovecot
-* elasticsearch
-* exec (generic executable plugin, support JSON, influx and graphite)
-* haproxy
-* httpjson (generic JSON-emitting http service plugin)
-* influxdb
-* jolokia
-* leofs
-* lustre2
-* mailchimp
-* memcached
-* mesos
-* mongodb
-* mysql
-* net_response
-* nginx
-* nsq
-* phpfpm
-* phusion passenger
-* ping
-* postgresql
-* powerdns
-* procstat
-* prometheus
-* puppetagent
-* rabbitmq
-* raindrops
-* redis
-* rethinkdb
-* riak
-* sensors (only available if built from source)
-* snmp
-* sql server (microsoft)
-* twemproxy
-* zfs
-* zookeeper
-* win_perf_counters (windows performance counters)
-* system
+* [aws cloudwatch](./plugins/inputs/cloudwatch)
+* [aerospike](./plugins/inputs/aerospike)
+* [apache](./plugins/inputs/apache)
+* [bcache](./plugins/inputs/bcache)
+* [cassandra](./plugins/inputs/cassandra)
+* [ceph](./plugins/inputs/ceph)
+* [chrony](./plugins/inputs/chrony)
+* [consul](./plugins/inputs/consul)
+* [conntrack](./plugins/inputs/conntrack)
+* [couchbase](./plugins/inputs/couchbase)
+* [couchdb](./plugins/inputs/couchdb)
+* [disque](./plugins/inputs/disque)
+* [dns query time](./plugins/inputs/dns_query)
+* [docker](./plugins/inputs/docker)
+* [dovecot](./plugins/inputs/dovecot)
+* [elasticsearch](./plugins/inputs/elasticsearch)
+* [exec](./plugins/inputs/exec) (generic executable plugin, support JSON, influx, graphite and nagios)
+* [filestat](./plugins/inputs/filestat)
+* [haproxy](./plugins/inputs/haproxy)
+* [hddtemp](./plugins/inputs/hddtemp)
+* [http_response](./plugins/inputs/http_response)
+* [httpjson](./plugins/inputs/httpjson) (generic JSON-emitting http service plugin)
+* [internal](./plugins/inputs/internal)
+* [influxdb](./plugins/inputs/influxdb)
+* [ipmi_sensor](./plugins/inputs/ipmi_sensor)
+* [iptables](./plugins/inputs/iptables)
+* [jolokia](./plugins/inputs/jolokia)
+* [leofs](./plugins/inputs/leofs)
+* [lustre2](./plugins/inputs/lustre2)
+* [mailchimp](./plugins/inputs/mailchimp)
+* [memcached](./plugins/inputs/memcached)
+* [mesos](./plugins/inputs/mesos)
+* [mongodb](./plugins/inputs/mongodb)
+* [mysql](./plugins/inputs/mysql)
+* [net_response](./plugins/inputs/net_response)
+* [nginx](./plugins/inputs/nginx)
+* [nsq](./plugins/inputs/nsq)
+* [nstat](./plugins/inputs/nstat)
+* [ntpq](./plugins/inputs/ntpq)
+* [phpfpm](./plugins/inputs/phpfpm)
+* [phusion passenger](./plugins/inputs/passenger)
+* [ping](./plugins/inputs/ping)
+* [postgresql](./plugins/inputs/postgresql)
+* [postgresql_extensible](./plugins/inputs/postgresql_extensible)
+* [powerdns](./plugins/inputs/powerdns)
+* [procstat](./plugins/inputs/procstat)
+* [prometheus](./plugins/inputs/prometheus)
+* [puppetagent](./plugins/inputs/puppetagent)
+* [rabbitmq](./plugins/inputs/rabbitmq)
+* [raindrops](./plugins/inputs/raindrops)
+* [redis](./plugins/inputs/redis)
+* [rethinkdb](./plugins/inputs/rethinkdb)
+* [riak](./plugins/inputs/riak)
+* [sensors](./plugins/inputs/sensors)
+* [snmp](./plugins/inputs/snmp)
+* [snmp_legacy](./plugins/inputs/snmp_legacy)
+* [sql server](./plugins/inputs/sqlserver) (microsoft)
+* [twemproxy](./plugins/inputs/twemproxy)
+* [varnish](./plugins/inputs/varnish)
+* [zfs](./plugins/inputs/zfs)
+* [zookeeper](./plugins/inputs/zookeeper)
+* [win_perf_counters ](./plugins/inputs/win_perf_counters) (windows performance counters)
+* [sysstat](./plugins/inputs/sysstat)
+* [system](./plugins/inputs/system)
     * cpu
     * mem
     * net
@@ -214,35 +208,57 @@ Currently implemented sources:
     * disk
     * diskio
     * swap
+    * processes
+    * kernel (/proc/stat)
+    * kernel (/proc/vmstat)
 
 Telegraf can also collect metrics via the following service plugins:
 
-* statsd
-* udp listener
-* mqtt_consumer
-* kafka_consumer
-* nats_consumer
-* github_webhooks
+* [http_listener](./plugins/inputs/http_listener)
+* [kafka_consumer](./plugins/inputs/kafka_consumer)
+* [mqtt_consumer](./plugins/inputs/mqtt_consumer)
+* [nats_consumer](./plugins/inputs/nats_consumer)
+* [nsq_consumer](./plugins/inputs/nsq_consumer)
+* [logparser](./plugins/inputs/logparser)
+* [statsd](./plugins/inputs/statsd)
+* [tail](./plugins/inputs/tail)
+* [tcp_listener](./plugins/inputs/tcp_listener)
+* [udp_listener](./plugins/inputs/udp_listener)
+* [webhooks](./plugins/inputs/webhooks)
+  * [filestack](./plugins/inputs/webhooks/filestack)
+  * [github](./plugins/inputs/webhooks/github)
+  * [mandrill](./plugins/inputs/webhooks/mandrill)
+  * [rollbar](./plugins/inputs/webhooks/rollbar)
 
-We'll be adding support for many more over the coming months. Read on if you
-want to add support for another service or third-party API.
+## Processor Plugins
 
-## Supported Output Plugins
+* [printer](./plugins/processors/printer)
 
-* influxdb
-* amon
-* amqp
-* aws kinesis
-* aws cloudwatch
-* datadog
-* graphite
-* kafka
-* librato
-* mqtt
-* nsq
-* opentsdb
-* prometheus
-* riemann
+## Aggregator Plugins
+
+* [minmax](./plugins/aggregators/minmax)
+
+## Output Plugins
+
+* [influxdb](./plugins/outputs/influxdb)
+* [amon](./plugins/outputs/amon)
+* [amqp](./plugins/outputs/amqp)
+* [aws kinesis](./plugins/outputs/kinesis)
+* [aws cloudwatch](./plugins/outputs/cloudwatch)
+* [datadog](./plugins/outputs/datadog)
+* [discard](./plugins/outputs/discard)
+* [file](./plugins/outputs/file)
+* [graphite](./plugins/outputs/graphite)
+* [graylog](./plugins/outputs/graylog)
+* [instrumental](./plugins/outputs/instrumental)
+* [kafka](./plugins/outputs/kafka)
+* [librato](./plugins/outputs/librato)
+* [mqtt](./plugins/outputs/mqtt)
+* [nats](./plugins/outputs/nats)
+* [nsq](./plugins/outputs/nsq)
+* [opentsdb](./plugins/outputs/opentsdb)
+* [prometheus](./plugins/outputs/prometheus_client)
+* [riemann](./plugins/outputs/riemann)
 
 ## Contributing
 

@@ -64,7 +64,7 @@ Instances (this is an array) is the instances of a counter you would like return
 it can be one or more values.
 
 Example, `Instances = ["C:","D:","E:"]` will return only for the instances
-C:, D: and E: where relevant. To get all instnaces of a Counter, use ["*"] only.
+C:, D: and E: where relevant. To get all instances of a Counter, use ["*"] only.
 By default any results containing _Total are stripped,
 unless this is specified as the wanted instance.
 Alternatively see the option IncludeTotal below.
@@ -144,7 +144,7 @@ if any of the combinations of ObjectName/Instances/Counters are invalid.
 
   [[inputs.win_perf_counters.object]]
     ObjectName = "System"
-    Counters = ["Context Switches/sec","System Calls/sec"]
+    Counters = ["Context Switches/sec","System Calls/sec", "Processor Queue Length"]
     Instances = ["------"]
     Measurement = "win_system"
     #IncludeTotal=false #Set to true to include _Total instance when querying for all (*).
@@ -155,6 +155,15 @@ if any of the combinations of ObjectName/Instances/Counters are invalid.
     Counters = ["Available Bytes","Cache Faults/sec","Demand Zero Faults/sec","Page Faults/sec","Pages/sec","Transition Faults/sec","Pool Nonpaged Bytes","Pool Paged Bytes"]
     Instances = ["------"] # Use 6 x - to remove the Instance bit from the query.
     Measurement = "win_mem"
+    #IncludeTotal=false #Set to true to include _Total instance when querying for all (*).
+
+  [[inputs.win_perf_counters.object]]
+    # more counters for the Network Interface Object can be found at
+    # https://msdn.microsoft.com/en-us/library/ms803962.aspx
+    ObjectName = "Network Interface"
+    Counters = ["Bytes Received/sec","Bytes Sent/sec","Packets Received/sec","Packets Sent/sec"]
+    Instances = ["*"] # Use 6 x - to remove the Instance bit from the query.
+    Measurement = "win_net"
     #IncludeTotal=false #Set to true to include _Total instance when querying for all (*).
 ```
 

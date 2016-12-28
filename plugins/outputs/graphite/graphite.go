@@ -2,11 +2,9 @@ package graphite
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"math/rand"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/influxdata/telegraf"
@@ -16,17 +14,23 @@ import (
 
 type Graphite struct {
 	// URL is only for backwards compatability
-	Servers []string
-	Prefix  string
-	Timeout int
-	conns   []net.Conn
+	Servers  []string
+	Prefix   string
+	Template string
+	Timeout  int
+	conns    []net.Conn
 }
 
 var sampleConfig = `
   ## TCP endpoint for your graphite instance.
+  ## If multiple endpoints are configured, output will be load balanced.
+  ## Only one of the endpoints will be written to with each iteration.
   servers = ["localhost:2003"]
   ## Prefix metrics name
   prefix = ""
+  ## Graphite output template
+  ## see https://github.com/influxdata/telegraf/blob/master/docs/DATA_FORMATS_OUTPUT.md
+  template = "host.tags.measurement.field"
   ## timeout in seconds for the write connection to graphite
   timeout = 2
 `
@@ -71,20 +75,19 @@ func (g *Graphite) Description() string {
 // occurs, logging each unsuccessful. If all servers fail, return error.
 func (g *Graphite) Write(metrics []telegraf.Metric) error {
 	// Prepare data
-	var bp []string
-	s, err := serializers.NewGraphiteSerializer(g.Prefix)
+	var batch []byte
+	s, err := serializers.NewGraphiteSerializer(g.Prefix, g.Template)
 	if err != nil {
 		return err
 	}
 
 	for _, metric := range metrics {
-		gMetrics, err := s.Serialize(metric)
+		buf, err := s.Serialize(metric)
 		if err != nil {
-			log.Printf("Error serializing some metrics to graphite: %s", err.Error())
+			log.Printf("E! Error serializing some metrics to graphite: %s", err.Error())
 		}
-		bp = append(bp, gMetrics...)
+		batch = append(batch, buf...)
 	}
-	graphitePoints := strings.Join(bp, "\n") + "\n"
 
 	// This will get set to nil if a successful write occurs
 	err = errors.New("Could not write to any Graphite server in cluster\n")
@@ -92,9 +95,12 @@ func (g *Graphite) Write(metrics []telegraf.Metric) error {
 	// Send data to a random server
 	p := rand.Perm(len(g.conns))
 	for _, n := range p {
-		if _, e := fmt.Fprintf(g.conns[n], graphitePoints); e != nil {
+		if g.Timeout > 0 {
+			g.conns[n].SetWriteDeadline(time.Now().Add(time.Duration(g.Timeout) * time.Second))
+		}
+		if _, e := g.conns[n].Write(batch); e != nil {
 			// Error
-			log.Println("ERROR: " + err.Error())
+			log.Println("E! Graphite Error: " + e.Error())
 			// Let's try the next one
 		} else {
 			// Success

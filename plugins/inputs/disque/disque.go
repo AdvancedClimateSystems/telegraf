@@ -24,9 +24,8 @@ type Disque struct {
 
 var sampleConfig = `
   ## An array of URI to gather stats about. Specify an ip or hostname
-  ## with optional port and password. ie disque://localhost, disque://10.10.3.33:18832,
-  ## 10.0.0.1:10000, etc.
-
+  ## with optional port and password.
+  ## ie disque://localhost, disque://10.10.3.33:18832, 10.0.0.1:10000, etc.
   ## If no servers are specified, then localhost is used as the host.
   servers = ["localhost"]
 `
@@ -163,7 +162,7 @@ func (g *Disque) gatherServer(addr *url.URL, acc telegraf.Accumulator) error {
 	var read int
 
 	fields := make(map[string]interface{})
-	tags := map[string]string{"host": addr.String()}
+	tags := map[string]string{"disque_host": addr.String()}
 	for read < sz {
 		line, err := r.ReadString('\n')
 		if err != nil {
